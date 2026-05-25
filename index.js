@@ -20,6 +20,12 @@ class PagesPublisher extends Plugin {
         this.currentProtyle = null;
         this.currentDocId = "";
         this.currentDocTitle = "";
+        this.lastActiveDocInfo = {
+            docId: "",
+            title: "",
+            updatedAt: 0,
+            source: "",
+        };
         this.openSetting = this.openSetting.bind(this);
         this.publishTask = null;
         this.progressEl = null;
@@ -117,11 +123,11 @@ class PagesPublisher extends Plugin {
         // 监听文档切换
         this.eventBus.on("switch-protyle", ({ detail }) => {
             this.currentProtyle = detail?.protyle;
-            this.updateDocInfo();
+            this.updateDocInfo("active-protyle");
         });
         this.eventBus.on("loaded-protyle-dynamic", ({ detail }) => {
             this.currentProtyle = detail?.protyle;
-            this.updateDocInfo();
+            this.updateDocInfo("loaded-protyle-dynamic");
         });
     }
 
@@ -207,15 +213,265 @@ class PagesPublisher extends Plugin {
         setting.open(this.displayName || "Pages 发布");
     }
 
-    updateDocInfo() {
-        if (!this.currentProtyle) return;
-        try {
-            const b = this.currentProtyle.block;
-            if (b) {
-                this.currentDocId = b.rootID || b.rootId || b.id || "";
-                this.currentDocTitle = b.title || "";
+    updateDocInfo(source = "active-protyle") {
+        this.refreshLastActiveDocInfo(source).catch(() => {});
+    }
+
+    sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    normalizeDocInfo(info, source = "fallback") {
+        const docId = String(info?.docId || "").trim();
+        const title = String(info?.title || "").trim();
+        return {
+            docId,
+            title,
+            source: String(info?.source || source || "fallback"),
+        };
+    }
+
+    applyCurrentDocInfo(info, options = {}) {
+        const normalized = this.normalizeDocInfo(info, info?.source || "fallback");
+        if (!normalized.docId) return normalized;
+        this.currentDocId = normalized.docId;
+        if (normalized.title) this.currentDocTitle = normalized.title;
+        const shouldCache = options.cache !== false;
+        if (shouldCache) {
+            this.lastActiveDocInfo = {
+                docId: normalized.docId,
+                title: normalized.title || this.currentDocTitle || normalized.docId,
+                updatedAt: Date.now(),
+                source: normalized.source,
+            };
+        }
+        return normalized;
+    }
+
+    getDocTitleFromProtyle(protyle) {
+        if (!protyle) return "";
+        const block = protyle.block || protyle.model || {};
+        const directTitle = block.title || block.name || protyle.title || protyle.docTitle;
+        if (directTitle) return String(directTitle).trim();
+        const element = protyle.element || protyle.protyle?.element || protyle.wysiwyg?.element;
+        if (!element || typeof element.querySelector !== "function") return "";
+        const selectors = [
+            ".protyle-title__input",
+            ".protyle-background__title",
+            "[data-type='NodeDocument'] .protyle-title__input",
+        ];
+        for (const selector of selectors) {
+            const node = element.querySelector(selector);
+            const value = String(node?.textContent || node?.value || "").trim();
+            if (value) return value;
+        }
+        return "";
+    }
+
+    getDocIdFromElement(element) {
+        if (!element || typeof element.closest !== "function") return "";
+        const candidates = [
+            element,
+            element.closest("[data-doc-id]"),
+            element.closest("[data-root-id]"),
+            element.closest("[data-node-id]"),
+            element.closest(".protyle"),
+            element.closest(".layout-tab-container"),
+        ].filter(Boolean);
+        for (const node of candidates) {
+            const values = [
+                node.getAttribute?.("data-doc-id"),
+                node.getAttribute?.("data-root-id"),
+                node.getAttribute?.("data-node-id"),
+                node.dataset?.docId,
+                node.dataset?.rootId,
+                node.dataset?.nodeId,
+                node.dataset?.id,
+            ].filter(Boolean);
+            const docId = values.find((value) => /^\d{14}-[a-z0-9]+$/i.test(String(value).trim())) || values[0];
+            if (docId) return String(docId).trim();
+        }
+        return "";
+    }
+
+    getCurrentTitleFromDOM() {
+        const selectors = [
+            ".layout__wnd--active .protyle-title__input",
+            ".layout__wnd--active .protyle-background__title",
+            ".item--focus .item__text",
+            ".layout-tab-bar .item--focus",
+        ];
+        for (const selector of selectors) {
+            const node = document.querySelector(selector);
+            const value = String(node?.value || node?.textContent || node?.getAttribute?.("aria-label") || "").trim();
+            if (value) return value;
+        }
+        return "";
+    }
+
+    extractDocInfoFromProtyle(protyle, source = "active-protyle") {
+        if (!protyle) return this.normalizeDocInfo({}, source);
+        const block = protyle.block || protyle.model || {};
+        const element = protyle.element || protyle.protyle?.element || protyle.wysiwyg?.element || null;
+        const docId = String(
+            block.rootID || block.rootId || block.id || protyle.rootID || protyle.rootId || this.getDocIdFromElement(element) || "",
+        ).trim();
+        const title = this.getDocTitleFromProtyle(protyle) || this.getCurrentTitleFromDOM() || "";
+        return this.normalizeDocInfo({ docId, title, source }, source);
+    }
+
+    getCurrentDocInfoFromSelection() {
+        const selectors = [
+            ".layout__wnd--active .protyle-wysiwyg [data-node-id].protyle-wysiwyg--select",
+            ".layout__wnd--active .protyle-wysiwyg [data-node-id].protyle-wysiwyg--hl",
+            ".layout__wnd--active .protyle-wysiwyg [data-node-id][contenteditable='true']",
+            ".layout__wnd--active .protyle-wysiwyg [data-node-id]",
+        ];
+        for (const selector of selectors) {
+            const node = document.querySelector(selector);
+            const docId = this.getDocIdFromElement(node);
+            if (!docId) continue;
+            return this.normalizeDocInfo({
+                docId,
+                title: this.getCurrentTitleFromDOM(),
+                source: "selected-block",
+            }, "selected-block");
+        }
+        return this.normalizeDocInfo({}, "selected-block");
+    }
+
+    getCurrentDocInfoFromTab() {
+        const selectors = [
+            ".layout__wnd--active .item--focus[data-id]",
+            ".layout-tab-bar .item--focus[data-id]",
+            ".layout__wnd--active [data-activetime][data-id]",
+        ];
+        for (const selector of selectors) {
+            const node = document.querySelector(selector);
+            if (!node) continue;
+            const rawId = String(node.getAttribute("data-id") || node.dataset?.id || "").trim();
+            if (!rawId) continue;
+            const docIdMatch = rawId.match(/\d{14}-[a-z0-9]+/i);
+            if (!docIdMatch) continue;
+            const docId = docIdMatch[0];
+            const title = String(
+                node.getAttribute("title")
+                || node.getAttribute("aria-label")
+                || (typeof node.querySelector === "function" ? node.querySelector(".item__text")?.textContent : "")
+                || node.textContent
+                || "",
+            ).trim();
+            if (docId) return this.normalizeDocInfo({ docId, title, source: "tab-dom" }, "tab-dom");
+        }
+        return this.normalizeDocInfo({}, "tab-dom");
+    }
+
+    getCurrentDocInfoFromSiyuanLayout() {
+        const siyuan = globalThis.window?.siyuan;
+        if (!siyuan) return this.normalizeDocInfo({}, "siyuan-layout");
+        const protyles = [];
+        const push = (item) => {
+            if (!item) return;
+            if (Array.isArray(item)) {
+                item.forEach(push);
+                return;
             }
-        } catch (e) { /* ignore */ }
+            protyles.push(item);
+        };
+        push(siyuan.mobile?.editor?.protyle);
+        push(siyuan.editor?.protyle);
+        push(siyuan.editor?.protyles);
+        push(siyuan.protyle);
+        for (const protyle of protyles) {
+            const info = this.extractDocInfoFromProtyle(protyle, "siyuan-layout");
+            if (info.docId) return info;
+        }
+        return this.normalizeDocInfo({}, "siyuan-layout");
+    }
+
+    async readDocMetaById(docId) {
+        const id = String(docId || "").trim();
+        if (!id) return null;
+        try {
+            const result = await fetchSyncPost("/api/block/getBlockInfo", { id });
+            if (!result || result.code !== 0 || !result.data) return null;
+            const data = result.data || {};
+            const title = String(
+                data.rootTitle || data.title || data.name || data.pathName || data.hPath || "",
+            ).trim();
+            const rootID = String(data.rootID || data.rootId || data.id || id).trim();
+            return { docId: rootID || id, title };
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] readDocMetaById failed:", err);
+            return null;
+        }
+    }
+
+    async enrichDocInfo(info) {
+        const normalized = this.normalizeDocInfo(info, info?.source || "fallback");
+        if (!normalized.docId) return normalized;
+        const meta = await this.readDocMetaById(normalized.docId);
+        if (meta?.docId) {
+            return this.normalizeDocInfo({
+                docId: meta.docId,
+                title: meta.title || normalized.title || this.getCurrentTitleFromDOM() || meta.docId,
+                source: normalized.source,
+            }, normalized.source);
+        }
+        if (normalized.title) return normalized;
+        const domTitle = this.getCurrentTitleFromDOM();
+        if (domTitle) return this.normalizeDocInfo({ ...normalized, title: domTitle }, normalized.source);
+        return this.normalizeDocInfo({ ...normalized, title: normalized.docId }, normalized.source);
+    }
+
+    isLastActiveDocInfoStale(info = this.lastActiveDocInfo) {
+        const updatedAt = Number(info?.updatedAt || 0);
+        return !updatedAt || (Date.now() - updatedAt > 30 * 60 * 1000);
+    }
+
+    async getValidatedLastActiveDocInfo() {
+        const cached = this.lastActiveDocInfo || {};
+        if (!cached.docId) return this.normalizeDocInfo({}, "cached-current-doc");
+        const meta = await this.readDocMetaById(cached.docId);
+        if (!meta?.docId) return this.normalizeDocInfo({}, "cached-current-doc");
+        return this.normalizeDocInfo({
+            docId: meta.docId,
+            title: meta.title || cached.title || meta.docId,
+            source: "cached-current-doc",
+        }, "cached-current-doc");
+    }
+
+    async getCurrentDocInfoSafe(options = {}) {
+        const allowCache = options.allowCache !== false;
+        const steps = [
+            () => this.extractDocInfoFromProtyle(this.currentProtyle, "active-protyle"),
+            () => this.getCurrentDocInfoFromSelection(),
+            () => this.getCurrentDocInfoFromTab(),
+            () => this.getCurrentDocInfoFromSiyuanLayout(),
+        ];
+        for (const read of steps) {
+            const info = await this.enrichDocInfo(read());
+            if (info.docId) {
+                this.applyCurrentDocInfo(info);
+                return info;
+            }
+        }
+        if (allowCache) {
+            const cached = await this.getValidatedLastActiveDocInfo();
+            if (cached.docId) {
+                this.applyCurrentDocInfo(cached);
+                return cached;
+            }
+        }
+        return this.normalizeDocInfo({}, "fallback");
+    }
+
+    async refreshLastActiveDocInfo(source = "active-protyle") {
+        const info = await this.getCurrentDocInfoSafe({ allowCache: false });
+        if (info.docId) {
+            return this.applyCurrentDocInfo({ ...info, source });
+        }
+        return info;
     }
 
     // 获取当前平台配置
@@ -285,7 +541,9 @@ class PagesPublisher extends Plugin {
         const plat = data.platform || "gitee";
         const currentPlatform = () => data.platform || "gitee";
 
-        this.setting = new Setting({ width: "680px", height: "620px" });
+        this.refreshLastActiveDocInfo("panel-open").catch(() => {});
+
+        this.setting = new Setting({ width: "min(720px, 92vw)", height: "min(82vh, 820px)" });
 
         // ── 注入样式 ──
         this.setting.addItem({
@@ -294,59 +552,143 @@ class PagesPublisher extends Plugin {
                 const s = document.createElement("style");
                 s.textContent = `
                     .pp-setting-dialog {
-                        height: auto !important;
-                        max-height: min(84vh, 720px) !important;
+                        width: min(720px, 92vw) !important;
+                        height: min(82vh, 820px) !important;
+                        max-height: 82vh !important;
+                        min-height: 620px !important;
+                        display: flex !important;
+                        flex-direction: column !important;
+                    }
+                    .pp-setting-dialog .b3-dialog__header {
+                        flex: 0 0 auto !important;
                     }
                     .pp-setting-dialog .b3-dialog__body {
-                        flex: 0 1 auto !important;
+                        flex: 1 1 auto !important;
+                        min-height: 0 !important;
+                        display: flex !important;
+                        flex-direction: column !important;
                     }
                     .pp-setting-dialog .b3-dialog__content {
-                        flex: 0 1 auto !important;
-                        overflow: auto !important;
+                        flex: 1 1 auto !important;
+                        min-height: 0 !important;
+                        overflow-y: auto !important;
+                        overflow-x: hidden !important;
+                        padding: 18px 24px !important;
+                    }
+                    .pp-setting-dialog .b3-dialog__content > .config__tab-container {
+                        width: 100% !important;
+                        max-width: 680px !important;
+                        margin: 0 auto !important;
                         padding-bottom: 10px !important;
                     }
-
                     .config__tab-container .b3-label.pp-field {
                         min-height: 0 !important;
                         height: auto !important;
                         padding: 10px 0 !important;
                         align-items: center !important;
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__text {
-                        flex: 0 0 360px !important;
-                        min-width: 240px !important;
                         margin: 0 !important;
                     }
-                    .config__tab-container .b3-label.pp-field .b3-label__text > span { display:block; }
-                    .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child { margin-top: 4px; }
+                    .config__tab-container .b3-label.pp-field .b3-label__text {
+                        flex: 0 0 240px !important;
+                        min-width: 200px !important;
+                        margin: 0 !important;
+                    }
+                    .config__tab-container .b3-label.pp-field .b3-label__text > span {
+                        display:block;
+                    }
+                    .config__tab-container .b3-label.pp-field .b3-label__text > span:first-child {
+                        font-size: 13px;
+                        font-weight: 500;
+                        color: var(--b3-theme-on-surface);
+                    }
+                    .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
+                        margin-top: 3px;
+                        font-size: 12px;
+                        line-height: 1.45;
+                        color: var(--b3-theme-on-surface-light);
+                    }
                     .config__tab-container .b3-label.pp-field .b3-label__action {
                         flex: 1 1 auto !important;
                         width: auto !important;
                         min-width: 0 !important;
                         max-width: none !important;
-                        margin-left: 16px !important;
+                        margin-left: 14px !important;
                     }
                     .config__tab-container .b3-label.pp-field .b3-switch {
                         margin-left: 0 !important;
                     }
 
-                    .pp-platform-cards { display:flex; gap:10px; }
+                    .config__tab-container .b3-label.pp-section-card {
+                        border: 1px solid var(--b3-border-color) !important;
+                        border-radius: 12px !important;
+                        background: var(--b3-theme-surface) !important;
+                        padding: 14px 16px !important;
+                        margin: 0 0 14px !important;
+                    }
+                    .config__tab-container .b3-label.pp-section-share .b3-label__text {
+                        display: none !important;
+                    }
+                    .config__tab-container .b3-label.pp-section-share .b3-label__action {
+                        width: 100% !important;
+                        margin: 0 !important;
+                    }
+                    .config__tab-container .b3-label.pp-config-item {
+                        background: var(--b3-theme-surface) !important;
+                        margin: 0 !important;
+                        padding: 11px 16px !important;
+                        border-left: 1px solid var(--b3-border-color) !important;
+                        border-right: 1px solid var(--b3-border-color) !important;
+                        border-radius: 0 !important;
+                    }
+                    .config__tab-container .b3-label.pp-config-start {
+                        border-top: 1px solid var(--b3-border-color) !important;
+                        border-top-left-radius: 12px !important;
+                        border-top-right-radius: 12px !important;
+                        padding-top: 14px !important;
+                    }
+                    .config__tab-container .b3-label.pp-config-mid,
+                    .config__tab-container .b3-label.pp-config-end {
+                        border-top: 1px solid color-mix(in srgb, var(--b3-border-color) 60%, transparent) !important;
+                    }
+                    .config__tab-container .b3-label.pp-config-end {
+                        border-bottom: 1px solid var(--b3-border-color) !important;
+                        border-bottom-left-radius: 12px !important;
+                        border-bottom-right-radius: 12px !important;
+                        padding-bottom: 14px !important;
+                        margin: 0 0 14px !important;
+                    }
+                    .config__tab-container .b3-label.pp-switch-row {
+                        align-items: center !important;
+                    }
+                    .config__tab-container .b3-label.pp-switch-row .b3-label__action {
+                        display: flex !important;
+                        justify-content: flex-end !important;
+                    }
+
+                    .pp-platform-cards {
+                        display:grid;
+                        grid-template-columns: 1fr 1fr;
+                        gap:10px;
+                    }
                     .pp-platform-card {
-                        flex:1 1 180px; min-width:180px; padding:10px 12px; border:1.5px solid var(--b3-border-color);
+                        min-width:0;
+                        height:38px;
+                        padding:0 14px;
+                        border:1px solid var(--b3-border-color);
                         border-radius:10px; cursor:pointer; transition:all .2s;
                         display:flex; align-items:center; gap:10px;
-                        font-size:14px; font-weight:500; background:var(--b3-theme-surface);
+                        font-size:13px; font-weight:500; background:var(--b3-theme-background);
                     }
-                    .pp-platform-card:hover { border-color:var(--b3-theme-primary-light); background:var(--b3-theme-primary-lightest); }
-                    .pp-platform-card.active { border-color:var(--b3-theme-primary); background:var(--b3-theme-primary-lightest); box-shadow:0 0 0 1px var(--b3-theme-primary); }
+                    .pp-platform-card:hover { border-color:var(--b3-theme-primary-light); background:color-mix(in srgb, var(--b3-theme-primary-lightest) 72%, var(--b3-theme-background)); }
+                    .pp-platform-card.active { border-color:color-mix(in srgb, var(--b3-theme-primary) 78%, var(--b3-theme-background)); background:var(--b3-theme-primary-lightest); box-shadow:0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 32%, transparent); }
                     .pp-platform-card .pp-dot { width:10px;height:10px;border-radius:50%;background:var(--b3-border-color);flex-shrink:0;transition:background .2s; }
                     .pp-platform-card.active .pp-dot { background:var(--b3-theme-primary);box-shadow:0 0 0 3px var(--b3-theme-primary-lightest); }
-                    .pp-platform-card .pp-name { font-size:14px;font-weight:600; }
+                    .pp-platform-card .pp-name { font-size:13px;font-weight:600; }
 
                     .pp-input {
-                        width:100%; padding:8px 12px; font-size:14px;
+                        width:100%; height:36px; padding:0 12px; font-size:13px;
                         border:1.5px solid var(--b3-border-color); border-radius:8px;
-                        background:var(--b3-theme-surface); color:var(--b3-theme-on-surface);
+                        background:var(--b3-theme-background); color:var(--b3-theme-on-surface);
                         outline:none; transition:border-color .2s,box-shadow .2s; font-family:inherit;
                     }
                     .pp-input:hover { border-color:var(--b3-theme-primary-light); }
@@ -354,32 +696,93 @@ class PagesPublisher extends Plugin {
                     .pp-input::placeholder { color:var(--b3-theme-on-surface-light);opacity:.4; }
 
                     .pp-publish-btn {
-                        width:100%; padding:10px 20px; font-size:14px; font-weight:600;
+                        height:36px; padding:0 18px; font-size:13px; font-weight:600;
                         border:none; border-radius:10px; cursor:pointer; color:#fff;
                         background:linear-gradient(135deg,var(--b3-theme-primary),color-mix(in srgb,var(--b3-theme-primary) 70%,#000));
                         box-shadow:0 2px 10px rgba(0,0,0,.08); transition:all .25s;
+                        text-align:center;
+                    }
+                    .pp-publish-row .pp-publish-button {
+                        width: 200px;
+                        min-width: 200px;
+                        max-width: 220px;
+                        flex: 0 0 auto;
+                        height: 38px;
                     }
                     .pp-publish-btn:hover { transform:translateY(-1px); box-shadow:0 4px 18px rgba(0,0,0,.12); }
                     .pp-publish-btn:active { transform:translateY(0); }
                     .pp-publish-btn:disabled { opacity:.5;cursor:not-allowed;transform:none; }
+                    .config__tab-container .b3-label.pp-publish-row-host {
+                        margin: 0 0 16px !important;
+                        padding: 14px 0 16px !important;
+                        background: transparent !important;
+                        border: 0 !important;
+                        border-bottom: 1px solid var(--b3-border-color) !important;
+                        border-radius: 0 !important;
+                    }
+                    .config__tab-container .b3-label.pp-publish-row-host .b3-label__text {
+                        display:none !important;
+                    }
+                    .config__tab-container .b3-label.pp-publish-row-host .b3-label__action {
+                        width:100% !important;
+                        margin:0 !important;
+                    }
+                    .pp-publish-row {
+                        display:flex;
+                        justify-content:center;
+                        align-items:center;
+                        gap:12px;
+                    }
 
                     .pp-share-panel {
                         border: 1px solid var(--b3-border-color);
                         border-radius: 12px;
                         background: var(--b3-theme-surface);
-                        padding: 14px;
+                        width: 100%;
+                        padding: 14px 16px;
                     }
                     .pp-share-head {
                         display:flex;
                         align-items:center;
                         justify-content:space-between;
                         gap:12px;
-                        margin-bottom: 12px;
+                        margin-bottom: 14px;
+                        flex-wrap:wrap;
+                    }
+                    .pp-share-toolbar {
+                        display:flex;
+                        align-items:center;
+                        justify-content:flex-end;
+                        gap:10px;
+                        flex:1 1 320px;
+                        min-width:0;
+                        flex-wrap:wrap;
                     }
                     .pp-share-title {
                         font-size: 15px;
                         font-weight: 600;
                         color: var(--b3-theme-on-surface);
+                    }
+                    .pp-share-title-row {
+                        display:flex;
+                        align-items:center;
+                        gap:8px;
+                        min-width:0;
+                    }
+                    .pp-share-count {
+                        display:inline-flex;
+                        align-items:center;
+                        justify-content:center;
+                        min-width:28px;
+                        height:22px;
+                        padding:0 8px;
+                        border-radius:999px;
+                        font-size:12px;
+                        font-weight:500;
+                        color: var(--b3-theme-on-surface-light);
+                        background: color-mix(in srgb, var(--b3-theme-surface) 78%, var(--b3-theme-background));
+                        border: 1px solid var(--b3-border-color);
+                        flex:0 0 auto;
                     }
                     .pp-share-subtitle {
                         margin-top: 4px;
@@ -407,11 +810,36 @@ class PagesPublisher extends Plugin {
                         opacity: .55;
                         cursor: not-allowed;
                     }
+                    .pp-share-search {
+                        width: 260px;
+                        max-width: 100%;
+                        min-width: 180px;
+                        padding: 8px 12px;
+                        border: 1px solid var(--b3-border-color);
+                        border-radius: 999px;
+                        background: color-mix(in srgb, var(--b3-theme-surface) 82%, var(--b3-theme-background));
+                        color: var(--b3-theme-on-surface);
+                        font-size: 12px;
+                        outline: none;
+                        transition: border-color .2s, box-shadow .2s, background .2s;
+                    }
+                    .pp-share-search:hover {
+                        border-color: var(--b3-theme-primary-light);
+                    }
+                    .pp-share-search:focus {
+                        border-color: var(--b3-theme-primary);
+                        box-shadow: 0 0 0 3px var(--b3-theme-primary-lightest);
+                        background: var(--b3-theme-surface);
+                    }
                     .pp-share-empty {
-                        padding: 18px 12px;
+                        height: 72px;
+                        padding: 0 12px;
                         border: 1px dashed var(--b3-border-color);
                         border-radius: 10px;
                         color: var(--b3-theme-on-surface-light);
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
                         text-align: center;
                         font-size: 13px;
                     }
@@ -420,11 +848,19 @@ class PagesPublisher extends Plugin {
                         flex-direction:column;
                         gap:12px;
                     }
+                    .pp-share-body {
+                        max-height: none;
+                        overflow: visible;
+                        padding-right: 0;
+                    }
                     .pp-share-card {
                         border: 1px solid var(--b3-border-color);
                         border-radius: 12px;
                         background: var(--b3-theme-background);
                         padding: 12px;
+                        display:flex;
+                        flex-direction:column;
+                        gap:12px;
                     }
                     .pp-share-card-head {
                         display:flex;
@@ -439,8 +875,13 @@ class PagesPublisher extends Plugin {
                         color: var(--b3-theme-on-background);
                         word-break: break-word;
                     }
+                    .pp-share-card-time {
+                        flex: 0 0 auto;
+                        font-size: 12px;
+                        color: var(--b3-theme-on-surface-light);
+                        white-space: nowrap;
+                    }
                     .pp-share-card-meta {
-                        margin-top: 6px;
                         display:flex;
                         flex-wrap:wrap;
                         gap:6px;
@@ -459,7 +900,6 @@ class PagesPublisher extends Plugin {
                         display:grid;
                         grid-template-columns: minmax(88px, 104px) 1fr;
                         gap:8px 10px;
-                        margin-top: 12px;
                         font-size: 12px;
                         line-height: 1.5;
                     }
@@ -470,20 +910,31 @@ class PagesPublisher extends Plugin {
                         color: var(--b3-theme-on-background);
                         word-break: break-all;
                     }
-                    .pp-share-url {
-                        width: 100%;
-                        padding: 7px 10px;
-                        border-radius: 8px;
-                        border: 1px solid var(--b3-border-color);
-                        background: var(--b3-theme-surface);
-                        color: var(--b3-theme-on-surface);
+                    .pp-share-grid-value--link {
+                        min-width: 0;
+                    }
+                    .pp-share-url-link {
+                        display:block;
+                        max-width:100%;
+                        overflow:hidden;
+                        text-overflow:ellipsis;
+                        white-space:nowrap;
+                        color: var(--b3-theme-primary);
                         font-size: 12px;
+                        text-decoration:none;
+                    }
+                    .pp-share-url-link:hover {
+                        text-decoration:underline;
+                    }
+                    .pp-share-url-link:focus-visible {
+                        outline: 2px solid var(--b3-theme-primary);
+                        outline-offset: 2px;
+                        border-radius: 4px;
                     }
                     .pp-share-actions {
                         display:flex;
                         flex-wrap:wrap;
                         gap:8px;
-                        margin-top: 12px;
                     }
                     .pp-share-btn-danger:hover {
                         border-color: var(--b3-theme-error, #d23f31);
@@ -503,15 +954,58 @@ class PagesPublisher extends Plugin {
                             width: 100% !important;
                             margin-left: 0 !important;
                         }
-                        .pp-platform-cards { flex-wrap: wrap; }
-                        .pp-platform-card { min-width: 0; flex: 1 1 calc(50% - 5px); }
+                        .pp-platform-cards {
+                            grid-template-columns: 1fr 1fr;
+                        }
                         .pp-share-head,
                         .pp-share-card-head {
                             flex-direction: column;
                             align-items: stretch;
                         }
+                        .pp-share-toolbar {
+                            width:100%;
+                            justify-content:stretch;
+                            flex-wrap:wrap;
+                        }
+                        .pp-share-search {
+                            width:100%;
+                            min-width:0;
+                        }
                         .pp-share-grid {
                             grid-template-columns: 1fr;
+                        }
+                        .pp-share-card-time {
+                            white-space: normal;
+                        }
+                    }
+                    @media (max-width: 720px) {
+                        .pp-setting-dialog {
+                            width: 96vw !important;
+                            height: 90vh !important;
+                            max-height: 90vh !important;
+                            min-height: 0 !important;
+                        }
+                        .pp-setting-dialog .b3-dialog__content {
+                            padding: 14px !important;
+                        }
+                        .pp-platform-cards {
+                            grid-template-columns: 1fr;
+                        }
+                        .pp-share-toolbar {
+                            flex-direction: column;
+                            align-items: stretch;
+                        }
+                        .pp-publish-btn {
+                            width: auto;
+                        }
+                        .pp-publish-row {
+                            justify-content: center;
+                        }
+                        .pp-publish-row .pp-publish-button {
+                            width: 200px;
+                            min-width: 200px;
+                            max-width: 220px;
+                            flex: 0 0 auto;
                         }
                     }
                 `;
@@ -528,7 +1022,7 @@ class PagesPublisher extends Plugin {
             title: "托管平台",
             description: "选择发布到 Gitee Pages 或 GitHub Pages",
             direction: "row",
-            className: "pp-field",
+            className: "pp-field pp-section-card pp-section-platform",
             createActionElement: () => {
                 const wrap = document.createElement("div");
                 wrap.className = "pp-platform-cards";
@@ -558,7 +1052,7 @@ class PagesPublisher extends Plugin {
             title: "本地仓库路径",
             description: "Pages 仓库在本地的克隆路径",
             direction: "row",
-            className: "pp-field",
+            className: "pp-field pp-config-item pp-config-start",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -577,7 +1071,7 @@ class PagesPublisher extends Plugin {
             title: "Pages URL",
             description: "发布后的访问地址",
             direction: "row",
-            className: "pp-field",
+            className: "pp-field pp-config-item pp-config-mid",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -596,7 +1090,7 @@ class PagesPublisher extends Plugin {
             title: "站点标题",
             description: "HTML 页面顶部显示的站点名称",
             direction: "row",
-            className: "pp-field",
+            className: "pp-field pp-config-item pp-config-mid",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -614,7 +1108,7 @@ class PagesPublisher extends Plugin {
         this.setting.addItem({
             title: "自动 Git 推送",
             description: "导出 HTML 后自动 commit 并 push 到远程仓库",
-            className: "pp-field",
+            className: "pp-field pp-config-item pp-config-end pp-switch-row",
             createActionElement: () => {
                 const inp = document.createElement("input");
                 inp.type = "checkbox";
@@ -628,21 +1122,25 @@ class PagesPublisher extends Plugin {
         // ── 发布按钮 ──
         this.setting.addItem({
             title: "", description: "",
-            className: "pp-field",
+            className: "pp-publish-row-host",
             createActionElement: () => {
                 const btn = document.createElement("button");
-                btn.className = "pp-publish-btn";
+                btn.className = "pp-publish-btn pp-publish-button";
                 btn.textContent = "发布当前文档";
-                btn.addEventListener("click", () => {
+                btn.addEventListener("click", async () => {
                     if (that.publishTask) {
                         showMessage("已有发布任务正在后台运行", 2500, "info");
                         return;
                     }
                     btn.textContent = "后台发布中…";
                     btn.disabled = true;
+                    await that.refreshLastActiveDocInfo("panel-publish-click").catch(() => {});
                     that.runPublishInBackground();
                 });
-                return btn;
+                const wrap = document.createElement("div");
+                wrap.className = "pp-publish-row";
+                wrap.appendChild(btn);
+                return wrap;
             },
         });
 
@@ -650,7 +1148,7 @@ class PagesPublisher extends Plugin {
             title: "分享列表",
             description: "查看已发布记录，并对历史分享执行复制、更新、打开目录、删除。",
             direction: "row",
-            className: "pp-field",
+            className: "pp-field pp-section-share",
             createActionElement: () => {
                 const wrap = this.buildShareListElement();
                 this.renderShareList(wrap);
@@ -664,12 +1162,26 @@ class PagesPublisher extends Plugin {
     buildShareListElement() {
         const wrap = document.createElement("div");
         wrap.className = "pp-share-panel";
+        wrap._ppSearchQuery = "";
 
         const head = document.createElement("div");
         head.className = "pp-share-head";
 
         const titleWrap = document.createElement("div");
-        titleWrap.innerHTML = `<div class="pp-share-title">分享列表</div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
+        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span></div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
+
+        const toolbar = document.createElement("div");
+        toolbar.className = "pp-share-toolbar";
+
+        const searchInput = document.createElement("input");
+        searchInput.type = "search";
+        searchInput.className = "pp-share-search";
+        searchInput.placeholder = "搜索文档标题";
+        searchInput.spellcheck = false;
+        searchInput.addEventListener("input", () => {
+            wrap._ppSearchQuery = searchInput.value || "";
+            this.renderShareList(wrap);
+        });
 
         const refreshBtn = document.createElement("button");
         refreshBtn.className = "pp-share-refresh";
@@ -677,7 +1189,9 @@ class PagesPublisher extends Plugin {
         refreshBtn.addEventListener("click", () => this.renderShareList(wrap));
 
         head.appendChild(titleWrap);
-        head.appendChild(refreshBtn);
+        toolbar.appendChild(searchInput);
+        toolbar.appendChild(refreshBtn);
+        head.appendChild(toolbar);
 
         const body = document.createElement("div");
         body.className = "pp-share-body";
@@ -690,14 +1204,23 @@ class PagesPublisher extends Plugin {
     renderShareList(container) {
         if (!container) return;
         const body = container.querySelector(".pp-share-body");
+        const countEl = container.querySelector(".pp-share-count");
         if (!body) return;
         body.innerHTML = "";
 
-        const records = this.getShareRecords();
+        const keyword = String(container._ppSearchQuery || "").trim().toLocaleLowerCase();
+        const totalRecords = this.getShareRecords();
+        const records = totalRecords.filter((record) => {
+            if (!keyword) return true;
+            return String(record.title || "").toLocaleLowerCase().includes(keyword);
+        });
+        if (countEl) {
+            countEl.textContent = keyword ? `${records.length} / ${totalRecords.length} 条` : `${totalRecords.length} 条`;
+        }
         if (!records.length) {
             const empty = document.createElement("div");
             empty.className = "pp-share-empty";
-            empty.textContent = "暂无分享记录";
+            empty.textContent = keyword ? "未找到匹配的分享文档" : "暂无分享记录";
             body.appendChild(empty);
             return;
         }
@@ -713,30 +1236,27 @@ class PagesPublisher extends Plugin {
         card.className = "pp-share-card";
 
         const safeUpdated = this.formatDateTime(record.updatedAt);
-        const safeCreated = this.formatDateTime(record.createdAt);
+        const safeUrl = String(record.url || "").trim();
+        const linkHtml = safeUrl
+            ? `<a class="pp-share-url-link" href="${this.escAttr(safeUrl)}" title="${this.escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(safeUrl)}</a>`
+            : `<span class="pp-share-grid-value">-</span>`;
         card.innerHTML = `
             <div class="pp-share-card-head">
                 <div>
                     <div class="pp-share-card-title">${this.esc(record.title)}</div>
                     <div class="pp-share-card-meta">
                         <span class="pp-share-chip">${record.platform}</span>
-                        <span>更新时间 ${this.esc(safeUpdated)}</span>
                     </div>
                 </div>
+                <div class="pp-share-card-time">更新时间 ${this.esc(safeUpdated)}</div>
             </div>
             <div class="pp-share-grid">
                 <div class="pp-share-grid-label">文档 ID</div>
                 <div class="pp-share-grid-value">${this.esc(record.docId)}</div>
-                <div class="pp-share-grid-label">目录名</div>
-                <div class="pp-share-grid-value">${this.esc(record.slug)}</div>
                 <div class="pp-share-grid-label">仓库路径</div>
                 <div class="pp-share-grid-value">${this.esc(record.repoPath)}</div>
-                <div class="pp-share-grid-label">创建时间</div>
-                <div class="pp-share-grid-value">${this.esc(safeCreated)}</div>
-                <div class="pp-share-grid-label">自动推送</div>
-                <div class="pp-share-grid-value">${record.autoCommit ? "是" : "否"}</div>
                 <div class="pp-share-grid-label">访问链接</div>
-                <div class="pp-share-grid-value"><input class="pp-share-url" type="text" readonly value="${this.escAttr(record.url)}"></div>
+                <div class="pp-share-grid-value pp-share-grid-value--link">${linkHtml}</div>
             </div>
         `;
 
@@ -866,17 +1386,31 @@ class PagesPublisher extends Plugin {
 
     // === 发布 ===
     async publish() {
-        this.updateDocInfo();
-        if (!this.currentDocId) {
-            this.finishProgress("发布失败：请先打开一篇文档", true);
-            showMessage("请先打开一篇文档", 3000, "warn");
+        let docInfo = await this.getCurrentDocInfoSafe({ allowCache: false });
+        if (!docInfo.docId) {
+            await this.sleep(100);
+            docInfo = await this.getCurrentDocInfoSafe({ allowCache: false });
+        }
+        if (!docInfo.docId) {
+            docInfo = await this.getValidatedLastActiveDocInfo();
+        }
+        console.debug("[Pages Publisher] current doc info:", docInfo);
+        if (!docInfo.docId) {
+            const hasCachedDoc = !!this.lastActiveDocInfo?.docId;
+            const stale = hasCachedDoc && this.isLastActiveDocInfoStale();
+            const message = stale
+                ? "未能确认当前打开文档，请重新点击正文后再发布"
+                : "请先打开一篇笔记后再发布";
+            this.finishProgress(`发布失败：${message}`, true);
+            showMessage(message, 3500, "warn");
             return;
         }
+        this.applyCurrentDocInfo(docInfo);
 
         try {
             await this.publishDoc({
-                docId: this.currentDocId,
-                title: this.currentDocTitle || "Untitled",
+                docId: docInfo.docId,
+                title: docInfo.title || this.currentDocTitle || docInfo.docId || "Untitled",
                 platform: this.currentConfig().platform,
                 source: "current",
             });
@@ -1019,6 +1553,14 @@ class PagesPublisher extends Plugin {
             updatedAt: now,
             autoCommit: cfg.autoCommit,
         });
+
+        if (source === "current") {
+            this.applyCurrentDocInfo({
+                docId,
+                title: exportedName || baseTitle || docId,
+                source: "publish-success",
+            });
+        }
 
         if (cfg.autoCommit) {
             this.finishProgress(`发布成功: ${url}`);
