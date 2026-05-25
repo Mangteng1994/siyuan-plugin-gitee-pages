@@ -1,0 +1,21 @@
+{
+  "name": "siyuan-plugin-gitee-pages",
+  "author": "Codex",
+  "version": "2.1.0",
+  "minAppVersion": "3.0.0",
+  "backends": ["windows", "linux", "darwin"],
+  "frontends": ["desktop"],
+  "displayName": {
+    "default": "Pages Publisher",
+    "zh_CN": "Pages 发布"
+  },
+  "description": {
+    "default": "One-click publish SiYuan notes as beautifully designed HTML to Gitee Pages / GitHub Pages.",
+    "zh_CN": "一键将思源笔记发布为精美排版的静态 HTML，支持 Gitee Pages 和 GitHub Pages。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README_zh_CN.md"
+  },
+  "keywords": ["publish", "gitee", "github", "pages", "html", "发布"]
+}
