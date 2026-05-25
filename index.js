@@ -1453,6 +1453,13 @@ class PagesPublisher extends Plugin {
 
     getSharePushStatusMeta(record) {
         const status = record?.pushStatus || "success";
+        if (status === "disabled") {
+            return {
+                label: "未开启",
+                className: "pp-share-chip--muted",
+                detail: "disabled",
+            };
+        }
         if (status === "failed") {
             return {
                 label: record?.lastPushErrorType === "REMOTE_AHEAD" ? "远程领先" : "推送失败",
@@ -1518,6 +1525,19 @@ class PagesPublisher extends Plugin {
         const openBtn = this.createShareActionButton("打开本地目录", async () => {
             await this.openLocalPath(path.join(record.repoPath, record.slug));
         });
+        const retryPushBtn = this.createShareActionButton("补推远程", async () => {
+            if (!record.repoPath) {
+                showMessage("缺少仓库路径，无法补推", 3000, "warn");
+                return;
+            }
+            try {
+                await this.pushPendingCommits(record.repoPath);
+                this.renderShareList(container);
+            } catch (e) {
+                // error already shown in pushPendingCommits
+                this.renderShareList(container);
+            }
+        });
         const deleteBtn = this.createShareActionButton("删除分享", async () => {
             await this.deleteShare(record);
             this.renderShareList(container);
@@ -1526,6 +1546,9 @@ class PagesPublisher extends Plugin {
         actions.appendChild(copyBtn);
         actions.appendChild(updateBtn);
         actions.appendChild(openBtn);
+        if (record.pushStatus !== "disabled") {
+            actions.appendChild(retryPushBtn);
+        }
         actions.appendChild(deleteBtn);
         card.appendChild(actions);
         return card;
@@ -1676,10 +1699,11 @@ class PagesPublisher extends Plugin {
             forceSlug: options.forceSlug,
             platform: options.platform,
             source: "share",
+            skipAutoPush: options.skipAutoPush,
         }));
     }
 
-    async publishDoc({ docId, title, forceSlug, platform, source = "current" }) {
+    async publishDoc({ docId, title, forceSlug, platform, source = "current", skipAutoPush = false }) {
         const cfg = this.currentConfig(platform);
         this.setProgress(3, "检查发布配置...");
 
@@ -1810,7 +1834,7 @@ class PagesPublisher extends Plugin {
             updatedAt: now,
             autoCommit: cfg.autoCommit,
             publishStatus: "local_saved",
-            pushStatus: cfg.autoCommit ? "pending" : "pending",
+            pushStatus: cfg.autoCommit ? "pending" : "disabled",
             lastPushErrorType: "",
         });
 
@@ -1822,41 +1846,19 @@ class PagesPublisher extends Plugin {
             });
         }
 
-        if (cfg.autoCommit) {
-            this.setProgress(78, "Git 提交并推送...");
-            try {
-                await this.gitPush(cfg.repoPath, exportedName || baseTitle, slug, undefined, {
-                    includeSharedAssets: sharedAssetsChanged,
-                });
-                record = await this.upsertShareRecord({
-                    ...record,
-                    updatedAt: new Date().toISOString(),
-                    publishStatus: "local_saved",
-                    pushStatus: "success",
-                    lastPushErrorType: "",
-                });
-                this.finishProgress(`发布成功: ${url}`);
-                showMessage(`发布成功! ${url}`, 6000, "info");
-            } catch (err) {
-                const errorType = err?.gitPushErrorType || "";
-                record = await this.upsertShareRecord({
-                    ...record,
-                    updatedAt: new Date().toISOString(),
-                    publishStatus: "local_saved",
-                    pushStatus: "failed",
-                    lastPushErrorType: errorType,
-                });
-                this.finishProgress(`本地已保存，远程推送失败: ${slug}/index.html`, true);
-                return {
-                    record,
-                    cfg,
-                    slug,
-                    targetDir,
-                    url,
-                    pushFailed: true,
-                    pushErrorType: errorType,
-                };
-            }
+        const shouldAutoPush = cfg.autoCommit && !skipAutoPush;
+        if (shouldAutoPush) {
+            this.finishProgress("本地发布完成，正在尝试后台推送...");
+            showMessage(`本地发布完成: ${slug}/index.html`, 3000, "info");
+            // Fire-and-forget non-blocking push
+            const that = this;
+            setTimeout(() => {
+                that._tryAutoPush(record, cfg.repoPath, exportedName || baseTitle, slug, sharedAssetsChanged)
+                    .catch(() => {});
+            }, 100);
+        } else if (cfg.autoCommit && skipAutoPush) {
+            this.finishProgress(`本地发布完成: ${slug}/index.html`);
+            showMessage(`本地发布完成: ${slug}/index.html`, 4000, "info");
         } else {
             this.finishProgress(`导出完成: ${slug}/index.html`);
             showMessage(`导出完成: ${slug}/index.html`, 4000, "info");
@@ -1871,12 +1873,43 @@ class PagesPublisher extends Plugin {
         };
     }
 
+    async _tryAutoPush(record, repoPath, title, slug, sharedAssetsChanged) {
+        try {
+            await this.gitPush(repoPath, title, slug, undefined, {
+                includeSharedAssets: sharedAssetsChanged,
+                allowPushExistingAhead: false,
+            });
+            await this.upsertShareRecord({
+                ...record,
+                updatedAt: new Date().toISOString(),
+                publishStatus: "local_saved",
+                pushStatus: "success",
+                lastPushErrorType: "",
+            });
+            showMessage(`远程推送成功: ${record.url || slug}`, 4000, "info");
+        } catch (err) {
+            const errorType = err?.gitPushErrorType || "";
+            await this.upsertShareRecord({
+                ...record,
+                updatedAt: new Date().toISOString(),
+                publishStatus: "local_saved",
+                pushStatus: "failed",
+                lastPushErrorType: errorType,
+            });
+            if (!err?._pagesMessageShown) {
+                const hint = this.buildGitPushHint(errorType);
+                showMessage(`远程推送失败: ${hint}`, 6000, "warn");
+            }
+        }
+    }
+
     async updateShare(record) {
         try {
             const result = await this.publishByDocId(record.docId, {
                 title: record.title,
                 forceSlug: record.slug,
                 platform: record.platform,
+                skipAutoPush: true,
             });
             if (result?.record && !result?.pushFailed) {
                 showMessage(`分享已更新: ${result.record.url}`, 4000, "info");
@@ -2898,6 +2931,14 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             return "AUTH_ERROR";
         }
         if (
+            text.includes("gh013") ||
+            text.includes("github push protection") ||
+            text.includes("push cannot contain secrets") ||
+            text.includes("repository rule violations found")
+        ) {
+            return "SECRET_PUSH_PROTECTION";
+        }
+        if (
             text.includes("pathspec") &&
             text.includes("did not match any files")
         ) {
@@ -2919,6 +2960,9 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         }
         if (errorType === "AUTH_ERROR") {
             return "GitHub 身份验证失败，请检查 token、仓库权限或远程地址。";
+        }
+        if (errorType === "SECRET_PUSH_PROTECTION") {
+            return "GitHub 推送保护检测到疑似密钥/凭证；请检查发布内容是否包含 token、密码或 API 密钥等敏感信息，移除后重试。";
         }
         if (errorType === "STAGE_PATH_NOT_FOUND") {
             return "Git 暂存失败：发布目录在本地仓库中不存在，且未被 Git 跟踪。请检查分享记录中的目录名是否与实际目录一致，或重新发布该文档后再同步。";
@@ -2969,6 +3013,50 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         }
     }
 
+    async pushPendingCommits(repoPath) {
+        try {
+            const o = { cwd: repoPath };
+            await this.runCommand("git rev-parse --git-dir", o);
+            this.setProgress(88, "补推远程...");
+            showMessage("补推远程...", 2000, "info");
+            await this.runGitPushWithRetry(o);
+            showMessage("补推远程成功", 3000, "info");
+            // Update all share records for this repoPath to pushStatus=success
+            const records = this.getShareRecords();
+            let updated = false;
+            for (const r of records) {
+                if (r.repoPath === repoPath && r.pushStatus !== "disabled") {
+                    await this.upsertShareRecord({
+                        ...r,
+                        updatedAt: new Date().toISOString(),
+                        pushStatus: "success",
+                        lastPushErrorType: "",
+                    });
+                    updated = true;
+                }
+            }
+            return { success: true, updated };
+        } catch (err) {
+            const errorType = this.classifyGitPushError(err);
+            const hint = this.buildGitPushHint(errorType);
+            err.gitPushErrorType = errorType;
+            showMessage(`补推远程失败: ${hint}`, 6000, "error");
+            // Update records with failure
+            const records = this.getShareRecords();
+            for (const r of records) {
+                if (r.repoPath === repoPath && r.pushStatus !== "disabled") {
+                    await this.upsertShareRecord({
+                        ...r,
+                        updatedAt: new Date().toISOString(),
+                        pushStatus: "failed",
+                        lastPushErrorType: errorType,
+                    });
+                }
+            }
+            throw err;
+        }
+    }
+
     async gitPush(repoPath, title, scopeDir, commitMessage, pushOptions = {}) {
         let committed = false;
         try {
@@ -2984,7 +3072,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
                 changed=true;
             }
             if(!changed){
-                if (await this.isBranchAhead(o)) {
+                if (pushOptions.allowPushExistingAhead && await this.isBranchAhead(o)) {
                     this.setProgress(88, "补推之前未推送的提交...");
                     showMessage("无新变化，补推之前未推送的提交...", 2500, "info");
                     await this.runGitPushWithRetry(o);
@@ -3015,19 +3103,18 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     async runGitPushWithRetry(options) {
         const attempts = [
             "git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
-            "git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
             "git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
         ];
         let lastErr = null;
         for (const cmd of attempts) {
             try {
-                showMessage("正在推送到 GitHub，若代理或网络卡住将自动超时重试...", 2500, "info");
-                await this.runCommand(cmd, { ...options, timeoutMs: 1_200_000 });
+                showMessage("正在推送到 GitHub...", 2000, "info");
+                await this.runCommand(cmd, { ...options, timeoutMs: 30_000 });
                 return;
             } catch (err) {
                 lastErr = err;
                 const errorType = this.classifyGitPushError(err);
-                if (errorType === "REMOTE_AHEAD" || errorType === "AUTH_ERROR") {
+                if (errorType === "REMOTE_AHEAD" || errorType === "AUTH_ERROR" || errorType === "SECRET_PUSH_PROTECTION") {
                     err.gitPushErrorType = errorType;
                     throw err;
                 }
