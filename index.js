@@ -30,11 +30,13 @@ class PagesPublisher extends Plugin {
             gitee: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
             github: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
             autoCommit: true,
+            shares: [],
         };
     }
 
     normalizeConfig(cfg) {
         const d = cfg || {};
+        const shares = Array.isArray(d.shares) ? d.shares.map((item) => this.normalizeShareRecord(item)).filter(Boolean) : [];
         return {
             platform: d.platform === "github" ? "github" : "gitee",
             gitee: {
@@ -48,6 +50,27 @@ class PagesPublisher extends Plugin {
                 siteTitle: d?.github?.siteTitle || "Notes",
             },
             autoCommit: d.autoCommit !== false,
+            shares,
+        };
+    }
+
+    normalizeShareRecord(record) {
+        if (!record || typeof record !== "object") return null;
+        const platform = record.platform === "github" ? "github" : "gitee";
+        const createdAt = record.createdAt || record.updatedAt || new Date().toISOString();
+        const updatedAt = record.updatedAt || createdAt;
+        return {
+            id: String(record.id || `${platform}-${record.docId || "doc"}-${record.slug || "share"}`),
+            docId: String(record.docId || ""),
+            title: String(record.title || "Untitled"),
+            platform,
+            slug: String(record.slug || ""),
+            url: String(record.url || ""),
+            repoPath: String(record.repoPath || ""),
+            createdAt,
+            updatedAt,
+            autoCommit: record.autoCommit !== false,
+            access: record.access && typeof record.access === "object" ? record.access : undefined,
         };
     }
 
@@ -122,6 +145,7 @@ class PagesPublisher extends Plugin {
             gitee: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
             github: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
             autoCommit: true,
+            shares: [],
         });
         const plat = data.platform || "gitee";
         const currentPlatform = () => data.platform || "gitee";
@@ -194,9 +218,9 @@ class PagesPublisher extends Plugin {
     }
 
     // 获取当前平台配置
-    currentConfig() {
+    currentConfig(platform) {
         const d = this.data[STORAGE_KEY];
-        const p = d.platform || "gitee";
+        const p = platform === "github" ? "github" : (platform || d.platform || "gitee");
         const pc = d[p] || {};
         return {
             platform: p,
@@ -205,6 +229,51 @@ class PagesPublisher extends Plugin {
             siteTitle: pc.siteTitle || "Notes",
             autoCommit: d.autoCommit !== false,
         };
+    }
+
+    getShareRecords() {
+        const cfg = this.data[STORAGE_KEY] || this.defaultConfig();
+        const shares = Array.isArray(cfg.shares) ? cfg.shares : [];
+        return shares
+            .map((item) => this.normalizeShareRecord(item))
+            .filter(Boolean)
+            .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    }
+
+    upsertShareRecord(record) {
+        const normalized = this.normalizeShareRecord(record);
+        if (!normalized) return null;
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const shares = Array.isArray(data.shares) ? data.shares.slice() : [];
+        const existingIndex = shares.findIndex((item) => item && item.docId === normalized.docId && item.platform === normalized.platform);
+        if (existingIndex >= 0) {
+            const existing = this.normalizeShareRecord(shares[existingIndex]);
+            shares[existingIndex] = {
+                ...existing,
+                ...normalized,
+                id: existing.id || normalized.id,
+                createdAt: existing.createdAt || normalized.createdAt,
+                updatedAt: normalized.updatedAt || new Date().toISOString(),
+            };
+        } else {
+            shares.push({
+                ...normalized,
+                id: normalized.id || `${normalized.platform}-${Date.now()}`,
+                createdAt: normalized.createdAt || new Date().toISOString(),
+                updatedAt: normalized.updatedAt || new Date().toISOString(),
+            });
+        }
+        data.shares = shares;
+        this.persistConfig(data);
+        return shares[existingIndex >= 0 ? existingIndex : shares.length - 1];
+    }
+
+    removeShareRecord(id) {
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const shares = Array.isArray(data.shares) ? data.shares.slice() : [];
+        const nextShares = shares.filter((item) => item?.id !== id);
+        data.shares = nextShares;
+        this.persistConfig(data);
     }
 
     // 显示设置+发布面板
@@ -293,6 +362,133 @@ class PagesPublisher extends Plugin {
                     .pp-publish-btn:active { transform:translateY(0); }
                     .pp-publish-btn:disabled { opacity:.5;cursor:not-allowed;transform:none; }
 
+                    .pp-share-panel {
+                        border: 1px solid var(--b3-border-color);
+                        border-radius: 12px;
+                        background: var(--b3-theme-surface);
+                        padding: 14px;
+                    }
+                    .pp-share-head {
+                        display:flex;
+                        align-items:center;
+                        justify-content:space-between;
+                        gap:12px;
+                        margin-bottom: 12px;
+                    }
+                    .pp-share-title {
+                        font-size: 15px;
+                        font-weight: 600;
+                        color: var(--b3-theme-on-surface);
+                    }
+                    .pp-share-subtitle {
+                        margin-top: 4px;
+                        color: var(--b3-theme-on-surface-light);
+                        font-size: 12px;
+                    }
+                    .pp-share-refresh,
+                    .pp-share-btn {
+                        border: 1px solid var(--b3-border-color);
+                        background: var(--b3-theme-background);
+                        color: var(--b3-theme-on-background);
+                        border-radius: 8px;
+                        padding: 6px 10px;
+                        font-size: 12px;
+                        cursor: pointer;
+                        transition: all .2s;
+                    }
+                    .pp-share-refresh:hover,
+                    .pp-share-btn:hover {
+                        border-color: var(--b3-theme-primary);
+                        color: var(--b3-theme-primary);
+                    }
+                    .pp-share-refresh:disabled,
+                    .pp-share-btn:disabled {
+                        opacity: .55;
+                        cursor: not-allowed;
+                    }
+                    .pp-share-empty {
+                        padding: 18px 12px;
+                        border: 1px dashed var(--b3-border-color);
+                        border-radius: 10px;
+                        color: var(--b3-theme-on-surface-light);
+                        text-align: center;
+                        font-size: 13px;
+                    }
+                    .pp-share-list {
+                        display:flex;
+                        flex-direction:column;
+                        gap:12px;
+                    }
+                    .pp-share-card {
+                        border: 1px solid var(--b3-border-color);
+                        border-radius: 12px;
+                        background: var(--b3-theme-background);
+                        padding: 12px;
+                    }
+                    .pp-share-card-head {
+                        display:flex;
+                        justify-content:space-between;
+                        gap:12px;
+                        align-items:flex-start;
+                    }
+                    .pp-share-card-title {
+                        font-size: 14px;
+                        font-weight: 600;
+                        line-height: 1.5;
+                        color: var(--b3-theme-on-background);
+                        word-break: break-word;
+                    }
+                    .pp-share-card-meta {
+                        margin-top: 6px;
+                        display:flex;
+                        flex-wrap:wrap;
+                        gap:6px;
+                        font-size: 12px;
+                        color: var(--b3-theme-on-surface-light);
+                    }
+                    .pp-share-chip {
+                        display:inline-flex;
+                        align-items:center;
+                        padding:2px 8px;
+                        border-radius:999px;
+                        background: var(--b3-theme-primary-lightest);
+                        color: var(--b3-theme-primary);
+                    }
+                    .pp-share-grid {
+                        display:grid;
+                        grid-template-columns: minmax(88px, 104px) 1fr;
+                        gap:8px 10px;
+                        margin-top: 12px;
+                        font-size: 12px;
+                        line-height: 1.5;
+                    }
+                    .pp-share-grid-label {
+                        color: var(--b3-theme-on-surface-light);
+                    }
+                    .pp-share-grid-value {
+                        color: var(--b3-theme-on-background);
+                        word-break: break-all;
+                    }
+                    .pp-share-url {
+                        width: 100%;
+                        padding: 7px 10px;
+                        border-radius: 8px;
+                        border: 1px solid var(--b3-border-color);
+                        background: var(--b3-theme-surface);
+                        color: var(--b3-theme-on-surface);
+                        font-size: 12px;
+                    }
+                    .pp-share-actions {
+                        display:flex;
+                        flex-wrap:wrap;
+                        gap:8px;
+                        margin-top: 12px;
+                    }
+                    .pp-share-btn-danger:hover {
+                        border-color: var(--b3-theme-error, #d23f31);
+                        color: var(--b3-theme-error, #d23f31);
+                    }
+
                     @media (max-width: 840px) {
                         .config__tab-container .b3-label.pp-field {
                             align-items: flex-start !important;
@@ -308,6 +504,14 @@ class PagesPublisher extends Plugin {
                         }
                         .pp-platform-cards { flex-wrap: wrap; }
                         .pp-platform-card { min-width: 0; flex: 1 1 calc(50% - 5px); }
+                        .pp-share-head,
+                        .pp-share-card-head {
+                            flex-direction: column;
+                            align-items: stretch;
+                        }
+                        .pp-share-grid {
+                            grid-template-columns: 1fr;
+                        }
                     }
                 `;
                 requestAnimationFrame(() => {
@@ -441,14 +645,174 @@ class PagesPublisher extends Plugin {
             },
         });
 
+        this.setting.addItem({
+            title: "分享列表",
+            description: "查看已发布记录，并对历史分享执行复制、更新、打开目录、删除。",
+            direction: "row",
+            className: "pp-field",
+            createActionElement: () => {
+                const wrap = this.buildShareListElement();
+                this.renderShareList(wrap);
+                return wrap;
+            },
+        });
+
         this.setting.open(this.displayName || "Pages 发布");
     }
 
+    buildShareListElement() {
+        const wrap = document.createElement("div");
+        wrap.className = "pp-share-panel";
+
+        const head = document.createElement("div");
+        head.className = "pp-share-head";
+
+        const titleWrap = document.createElement("div");
+        titleWrap.innerHTML = `<div class="pp-share-title">分享列表</div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
+
+        const refreshBtn = document.createElement("button");
+        refreshBtn.className = "pp-share-refresh";
+        refreshBtn.textContent = "刷新";
+        refreshBtn.addEventListener("click", () => this.renderShareList(wrap));
+
+        head.appendChild(titleWrap);
+        head.appendChild(refreshBtn);
+
+        const body = document.createElement("div");
+        body.className = "pp-share-body";
+
+        wrap.appendChild(head);
+        wrap.appendChild(body);
+        return wrap;
+    }
+
+    renderShareList(container) {
+        if (!container) return;
+        const body = container.querySelector(".pp-share-body");
+        if (!body) return;
+        body.innerHTML = "";
+
+        const records = this.getShareRecords();
+        if (!records.length) {
+            const empty = document.createElement("div");
+            empty.className = "pp-share-empty";
+            empty.textContent = "暂无分享记录";
+            body.appendChild(empty);
+            return;
+        }
+
+        const list = document.createElement("div");
+        list.className = "pp-share-list";
+        records.forEach((record) => list.appendChild(this.createShareCard(record, container)));
+        body.appendChild(list);
+    }
+
+    createShareCard(record, container) {
+        const card = document.createElement("div");
+        card.className = "pp-share-card";
+
+        const safeUpdated = this.formatDateTime(record.updatedAt);
+        const safeCreated = this.formatDateTime(record.createdAt);
+        card.innerHTML = `
+            <div class="pp-share-card-head">
+                <div>
+                    <div class="pp-share-card-title">${this.esc(record.title)}</div>
+                    <div class="pp-share-card-meta">
+                        <span class="pp-share-chip">${record.platform}</span>
+                        <span>更新时间 ${this.esc(safeUpdated)}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="pp-share-grid">
+                <div class="pp-share-grid-label">文档 ID</div>
+                <div class="pp-share-grid-value">${this.esc(record.docId)}</div>
+                <div class="pp-share-grid-label">目录名</div>
+                <div class="pp-share-grid-value">${this.esc(record.slug)}</div>
+                <div class="pp-share-grid-label">仓库路径</div>
+                <div class="pp-share-grid-value">${this.esc(record.repoPath)}</div>
+                <div class="pp-share-grid-label">创建时间</div>
+                <div class="pp-share-grid-value">${this.esc(safeCreated)}</div>
+                <div class="pp-share-grid-label">自动推送</div>
+                <div class="pp-share-grid-value">${record.autoCommit ? "是" : "否"}</div>
+                <div class="pp-share-grid-label">访问链接</div>
+                <div class="pp-share-grid-value"><input class="pp-share-url" type="text" readonly value="${this.escAttr(record.url)}"></div>
+            </div>
+        `;
+
+        const actions = document.createElement("div");
+        actions.className = "pp-share-actions";
+
+        const copyBtn = this.createShareActionButton("复制链接", async () => {
+            await this.copyShareUrl(record.url);
+        });
+        const updateBtn = this.createShareActionButton("更新分享", async () => {
+            await this.updateShare(record);
+            this.renderShareList(container);
+        });
+        const openBtn = this.createShareActionButton("打开本地目录", async () => {
+            await this.openLocalPath(path.join(record.repoPath, record.slug));
+        });
+        const deleteBtn = this.createShareActionButton("删除分享", async () => {
+            await this.deleteShare(record);
+            this.renderShareList(container);
+        }, "pp-share-btn-danger");
+
+        actions.appendChild(copyBtn);
+        actions.appendChild(updateBtn);
+        actions.appendChild(openBtn);
+        actions.appendChild(deleteBtn);
+        card.appendChild(actions);
+        return card;
+    }
+
+    createShareActionButton(label, handler, extraClass = "") {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `pp-share-btn${extraClass ? ` ${extraClass}` : ""}`;
+        btn.textContent = label;
+        btn.addEventListener("click", async () => {
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = "处理中...";
+            try {
+                await handler();
+            } finally {
+                btn.disabled = false;
+                btn.textContent = original;
+            }
+        });
+        return btn;
+    }
+
+    async copyShareUrl(url) {
+        if (!url) {
+            showMessage("该记录没有可复制的访问链接", 3000, "warn");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(url);
+            showMessage("链接已复制", 2000, "info");
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] copyShareUrl failed:", err);
+            showMessage("复制链接失败，请检查剪贴板权限", 4000, "error");
+        }
+    }
+
+
     runPublishInBackground() {
         this.closePublishPanel();
+        this.runExclusiveTask(() => this.publish());
+    }
+
+    runExclusiveTask(task) {
+        if (this.publishTask) {
+            showMessage("已有发布任务正在后台运行，请稍后再试", 3000, "info");
+            return this.publishTask;
+        }
         this.publishTask = Promise.resolve()
-            .then(() => this.publish())
+            .then(() => task())
             .finally(() => { this.publishTask = null; });
+        return this.publishTask;
     }
 
     closePublishPanel() {
@@ -501,20 +865,6 @@ class PagesPublisher extends Plugin {
 
     // === 发布 ===
     async publish() {
-        const cfg = this.currentConfig();
-        this.setProgress(3, "检查发布配置...");
-
-        if (!cfg.repoPath) {
-            this.finishProgress("发布失败：请先填写仓库路径", true);
-            showMessage("请先填写仓库路径", 3000, "warn");
-            return;
-        }
-        if (!fs.existsSync(cfg.repoPath)) {
-            this.finishProgress(`发布失败：路径不存在 ${cfg.repoPath}`, true);
-            showMessage(`路径不存在: ${cfg.repoPath}`, 4000, "error");
-            return;
-        }
-
         this.updateDocInfo();
         if (!this.currentDocId) {
             this.finishProgress("发布失败：请先打开一篇文档", true);
@@ -523,95 +873,265 @@ class PagesPublisher extends Plugin {
         }
 
         try {
-            const title = this.currentDocTitle || "Untitled";
-            let slug = this.fname(title);
-            let targetDir = path.join(cfg.repoPath, slug);
-            const exportStartedAt = Date.now();
-
-            this.setProgress(12, "导出 SiYuan HTML(SiYuan) 正文...");
-            showMessage("导出 SiYuan HTML(SiYuan) 中...", 1800, "info");
-
-            // 先按原生 HTML(SiYuan) 菜单同款参数导出正文，避免 savePath 影响 HTML 属性顺序。
-            const r = await fetchSyncPost("/api/export/exportHTML", {
-                id: this.currentDocId,
-                pdf: false,
-                removeAssets: false,
-                merge: true,
-                savePath: "",
+            await this.publishDoc({
+                docId: this.currentDocId,
+                title: this.currentDocTitle || "Untitled",
+                platform: this.currentConfig().platform,
+                source: "current",
             });
-            if (!r || r.code !== 0 || !r.data) {
-                this.finishProgress("导出失败: " + (r?.msg || "未知"), true);
-                showMessage("导出失败: " + (r?.msg || "未知"), 5000, "error");
-                return;
-            }
-            const exportedName = (r.data.name || "").trim();
-            const finalSlug = this.fname(exportedName || title);
-            if (finalSlug !== slug) {
-                slug = finalSlug;
-                targetDir = path.join(cfg.repoPath, slug);
-            }
-
-            this.setProgress(32, `准备本地目录: ${slug}`);
-            this.ensureEmptyDir(targetDir);
-            let resourceResult = r;
-            this.setProgress(42, "复制/导出原生资源文件...");
-            if (!this.copyNativeExportFolder(r.data.folder, targetDir)) {
-                resourceResult = await fetchSyncPost("/api/export/exportHTML", {
-                    id: this.currentDocId,
-                    pdf: false,
-                    removeAssets: false,
-                    merge: true,
-                    savePath: targetDir,
-                });
-                if (!resourceResult || resourceResult.code !== 0 || !resourceResult.data) {
-                    this.finishProgress("资源导出失败: " + (resourceResult?.msg || "未知"), true);
-                    showMessage("资源导出失败: " + (resourceResult?.msg || "未知"), 5000, "error");
-                    return;
-                }
-            }
-
-            this.setProgress(58, "生成 index.html...");
-            if (typeof r.data.content === "string" && r.data.content.trim()) {
-                fs.writeFileSync(
-                    path.join(targetDir, "index.html"),
-                    await this.buildSiYuanNativeHTML(r.data.content, exportedName || title),
-                    "utf-8",
-                );
-            }
-            this.setProgress(68, "校验导出产物...");
-            const resolved = this.resolveSiYuanExportOutput({
-                repoPath: cfg.repoPath,
-                targetDir,
-                slug,
-                title,
-                exportedName: (resourceResult.data?.name || exportedName || "").trim(),
-                exportStartedAt,
-            });
-
-            if (!resolved.ok) {
-                this.finishProgress("导出失败：未找到 index.html", true);
-                showMessage("导出失败: 未找到index.html(SiYuan原生导出产物)v3.6.5", 6000, "error");
-                return;
-            }
-
-            showMessage(`已导出: ${slug}/index.html`, 2500, "info");
-
-            // Git（只提交该文档目录，避免误改仓库其他内容）
-            if (cfg.autoCommit) {
-                this.setProgress(78, "Git 提交并推送...");
-                await this.gitPush(cfg.repoPath, exportedName || title, slug);
-                const url = cfg.pagesUrl ? `${cfg.pagesUrl}/${encodeURIComponent(slug)}/` : `${slug}/`;
-                this.finishProgress(`发布成功: ${url}`);
-                showMessage(`发布成功! ${url}`, 6000, "info");
-            } else {
-                this.finishProgress(`导出完成: ${slug}/index.html`);
-            }
         } catch (err) {
             this.finishProgress(`发布失败: ${this.formatError(err)}`, true);
             if (!err?._pagesMessageShown) {
                 showMessage(`失败: ${this.formatError(err)}`, 5000, "error");
             }
             console.error(err);
+        }
+    }
+
+    async publishByDocId(docId, options = {}) {
+        if (!docId) throw new Error("缺少文档 ID");
+        return this.runExclusiveTask(() => this.publishDoc({
+            docId,
+            title: options.title || "Untitled",
+            forceSlug: options.forceSlug,
+            platform: options.platform,
+            source: "share",
+        }));
+    }
+
+    async publishDoc({ docId, title, forceSlug, platform, source = "current" }) {
+        const cfg = this.currentConfig(platform);
+        this.setProgress(3, "检查发布配置...");
+
+        if (!cfg.repoPath) {
+            this.finishProgress("发布失败：请先填写仓库路径", true);
+            showMessage("请先填写仓库路径", 3000, "warn");
+            return null;
+        }
+        if (!fs.existsSync(cfg.repoPath)) {
+            this.finishProgress(`发布失败：路径不存在 ${cfg.repoPath}`, true);
+            showMessage(`路径不存在: ${cfg.repoPath}`, 4000, "error");
+            return null;
+        }
+
+        const baseTitle = title || "Untitled";
+        let slug = forceSlug || this.fname(baseTitle);
+        let targetDir = path.join(cfg.repoPath, slug);
+        const exportStartedAt = Date.now();
+
+        this.setProgress(12, "导出 SiYuan HTML(SiYuan) 正文...");
+        showMessage("导出 SiYuan HTML(SiYuan) 中...", 1800, "info");
+
+        const r = await fetchSyncPost("/api/export/exportHTML", {
+            id: docId,
+            pdf: false,
+            removeAssets: false,
+            merge: true,
+            savePath: "",
+        });
+        if (!r || r.code !== 0 || !r.data) {
+            const msg = r?.msg || "未知";
+            if (source === "share") {
+                const error = new Error(`无法读取该文档，请打开原文档后重新发布。${msg ? ` (${msg})` : ""}`);
+                error._pagesMessageShown = true;
+                this.finishProgress(error.message, true);
+                showMessage(error.message, 6000, "error");
+                throw error;
+            }
+            this.finishProgress("导出失败: " + msg, true);
+            showMessage("导出失败: " + msg, 5000, "error");
+            return null;
+        }
+
+        const exportedName = (r.data.name || "").trim();
+        const finalSlug = forceSlug || this.fname(exportedName || baseTitle);
+        if (finalSlug !== slug) {
+            slug = finalSlug;
+            targetDir = path.join(cfg.repoPath, slug);
+        }
+
+        this.setProgress(32, `准备本地目录: ${slug}`);
+        this.ensureEmptyDir(targetDir);
+        let resourceResult = r;
+        this.setProgress(42, "复制/导出原生资源文件...");
+        if (!this.copyNativeExportFolder(r.data.folder, targetDir)) {
+            resourceResult = await fetchSyncPost("/api/export/exportHTML", {
+                id: docId,
+                pdf: false,
+                removeAssets: false,
+                merge: true,
+                savePath: targetDir,
+            });
+            if (!resourceResult || resourceResult.code !== 0 || !resourceResult.data) {
+                this.finishProgress("资源导出失败: " + (resourceResult?.msg || "未知"), true);
+                showMessage("资源导出失败: " + (resourceResult?.msg || "未知"), 5000, "error");
+                return null;
+            }
+        }
+
+        this.setProgress(58, "生成 index.html...");
+        if (typeof r.data.content === "string" && r.data.content.trim()) {
+            fs.writeFileSync(
+                path.join(targetDir, "index.html"),
+                await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle),
+                "utf-8",
+            );
+        }
+
+        this.setProgress(68, "校验导出产物...");
+        const resolved = this.resolveSiYuanExportOutput({
+            repoPath: cfg.repoPath,
+            targetDir,
+            slug,
+            title: baseTitle,
+            exportedName: (resourceResult.data?.name || exportedName || "").trim(),
+            exportStartedAt,
+        });
+
+        if (!resolved.ok) {
+            this.finishProgress("导出失败：未找到 index.html", true);
+            showMessage("导出失败: 未找到index.html(SiYuan原生导出产物)v3.6.5", 6000, "error");
+            return null;
+        }
+
+        showMessage(`已导出: ${slug}/index.html`, 2500, "info");
+
+        if (cfg.autoCommit) {
+            this.setProgress(78, "Git 提交并推送...");
+            await this.gitPush(cfg.repoPath, exportedName || baseTitle, slug);
+        }
+
+        const url = this.buildShareUrl(cfg.pagesUrl, slug);
+        const now = new Date().toISOString();
+        const record = this.upsertShareRecord({
+            id: `${cfg.platform}-${docId}-${slug}`,
+            docId,
+            title: exportedName || baseTitle,
+            platform: cfg.platform,
+            slug,
+            url,
+            repoPath: cfg.repoPath,
+            createdAt: now,
+            updatedAt: now,
+            autoCommit: cfg.autoCommit,
+        });
+
+        if (cfg.autoCommit) {
+            this.finishProgress(`发布成功: ${url}`);
+            showMessage(`发布成功! ${url}`, 6000, "info");
+        } else {
+            this.finishProgress(`导出完成: ${slug}/index.html`);
+            showMessage(`导出完成: ${slug}/index.html`, 4000, "info");
+        }
+
+        return {
+            record,
+            cfg,
+            slug,
+            targetDir,
+            url,
+        };
+    }
+
+    async updateShare(record) {
+        try {
+            const result = await this.publishByDocId(record.docId, {
+                title: record.title,
+                forceSlug: record.slug,
+                platform: record.platform,
+            });
+            if (result?.record) {
+                showMessage(`分享已更新: ${result.record.url}`, 4000, "info");
+            }
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] updateShare failed:", err);
+            if (!err?._pagesMessageShown) {
+                showMessage(`更新分享失败: ${this.formatError(err)}`, 5000, "error");
+            }
+        }
+    }
+
+    async deleteShare(record) {
+        try {
+            await this.runExclusiveTask(async () => {
+                const repoPath = record.repoPath || this.currentConfig(record.platform).repoPath;
+                if (!repoPath) {
+                    showMessage("删除失败：缺少仓库路径", 4000, "error");
+                    return;
+                }
+                const scopeDir = record.slug;
+                this.setProgress(10, `删除本地目录: ${scopeDir}`);
+                await this.deletePublishedDir({ ...record, repoPath });
+                try {
+                    this.setProgress(65, "同步删除到远程...");
+                    await this.gitCommitAndPush(repoPath, `Delete published page: ${record.title || record.slug}`, scopeDir);
+                } catch (err) {
+                    const msg = this.formatError(err);
+                    console.error("[siyuan-plugin-gitee-pages] deleteShare git sync failed:", err);
+                    this.finishProgress("本地目录已删除但远端同步失败", true);
+                    showMessage(`本地目录已删除但远端同步失败: ${msg}`, 7000, "error");
+                    return;
+                }
+                this.removeShareRecord(record.id);
+                this.finishProgress(`删除成功: ${scopeDir}`);
+                showMessage("分享已删除并同步到远程仓库", 4000, "info");
+            });
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] deleteShare failed:", err);
+            if (!err?._pagesMessageShown) {
+                showMessage(`删除失败: ${this.formatError(err)}`, 5000, "error");
+            }
+        }
+    }
+
+    async deletePublishedDir(record) {
+        const dir = path.join(record.repoPath, record.slug);
+        if (!fs.existsSync(dir)) {
+            showMessage("本地目录不存在，将继续尝试同步 Git 删除", 3500, "warn");
+            return;
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+
+    async gitCommitAndPush(repoPath, message, scopeDir) {
+        return this.gitPush(repoPath, message || "Delete published page", scopeDir, message);
+    }
+
+    buildShareUrl(baseUrl, slug) {
+        return baseUrl ? `${baseUrl}/${encodeURIComponent(slug)}/` : `${slug}/`;
+    }
+
+    formatDateTime(value) {
+        const d = value ? new Date(value) : null;
+        if (!d || Number.isNaN(d.getTime())) return "-";
+        return d.toLocaleString("zh-CN", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    }
+
+    async openLocalPath(dir) {
+        if (!dir) {
+            showMessage("缺少本地目录路径", 3000, "warn");
+            return;
+        }
+        if (!fs.existsSync(dir)) {
+            showMessage(`目录不存在: ${dir}`, 4000, "error");
+            return;
+        }
+        const quoted = `"${dir.replace(/"/g, '\\"')}"`;
+        let cmd = "";
+        if (process.platform === "win32") cmd = `cmd /c start "" ${quoted}`;
+        else if (process.platform === "darwin") cmd = `open ${quoted}`;
+        else cmd = `xdg-open ${quoted}`;
+        try {
+            await this.runCommand(cmd, { cwd: path.dirname(dir) });
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] openLocalPath failed:", err);
+            showMessage(`打开目录失败: ${this.formatError(err)}`, 5000, "error");
         }
     }
 
@@ -834,16 +1354,58 @@ class PagesPublisher extends Plugin {
     <title>${safeTitle}</title>
     <!-- Exported by SiYuan v${this.esc(version)} -->
     <style>
-        body {font-family: var(--b3-font-family);background-color: var(--b3-theme-background);color: var(--b3-theme-on-background)}
+        body {margin:0;font-family: var(--b3-font-family);background-color: var(--b3-theme-background);color: var(--b3-theme-on-background)}
         :root { --b3-font-size-editor: ${Number(editor.fontSize || 16)}px }
         .b3-typography code:not(.hljs), .protyle-wysiwyg span[data-type~=code] { font-variant-ligatures: ${editor.codeLigatures ? "normal" : "none"} }
+        .pages-pub-layout {max-width:1280px;margin:0 auto;padding:32px 24px 64px}
+        .pages-pub-main {min-width:0;margin-left:320px}
+        #preview {max-width: 800px;margin: 0 auto}
+        #preview :is(h1,h2,h3,h4,[data-type="NodeHeading"],[data-type~="NodeHeading"],[data-subtype="h1"],[data-subtype="h2"],[data-subtype="h3"],[data-subtype="h4"],.h1,.h2,.h3,.h4) {scroll-margin-top:84px}
+        #pages-pub-toc {position:fixed;top:24px;left:max(24px, calc(50vw - 616px));width:260px;max-height:calc(100vh - 48px);overflow:auto;border:1px solid var(--b3-border-color);border-radius:16px;background:color-mix(in srgb, var(--b3-theme-background) 92%, var(--b3-theme-surface) 8%);box-shadow:0 8px 30px rgba(0,0,0,.08)}
+        .pages-pub-toc__head {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 16px 10px;border-bottom:1px solid var(--b3-border-color)}
+        .pages-pub-toc__title {font-size:14px;font-weight:600;color:var(--b3-theme-on-background)}
+        .pages-pub-toc__toggle {display:none;padding:6px 10px;border:1px solid var(--b3-border-color);border-radius:999px;background:var(--b3-theme-background);color:var(--b3-theme-on-background);font-size:12px}
+        .pages-pub-toc__body {padding:10px 8px 14px}
+        .pages-pub-toc__list {display:flex;flex-direction:column;gap:2px}
+        .pages-pub-toc-link {display:block;padding:7px 10px;border-radius:10px;color:var(--b3-theme-on-background);text-decoration:none;font-size:13px;line-height:1.5;transition:background-color .2s,color .2s}
+        .pages-pub-toc-link:hover {background:var(--b3-theme-primary-lightest);color:var(--b3-theme-primary)}
+        .pages-pub-toc-link.active {background:var(--b3-theme-primary-lightest);color:var(--b3-theme-primary);font-weight:600}
+        .pages-pub-toc-link.toc-level-2 {padding-left:22px}
+        .pages-pub-toc-link.toc-level-3 {padding-left:34px}
+        .pages-pub-toc-link.toc-level-4 {padding-left:46px}
+        .pages-pub-toc-empty {padding:8px 10px;color:var(--b3-theme-on-surface-light);font-size:13px}
+        body.pages-pub-no-toc .pages-pub-main {margin-left:0}
+        #pages-pub-toc.pages-pub-toc--empty:not(.is-open) .pages-pub-toc__body {display:block}
+        @media (max-width: 1100px) {
+            .pages-pub-layout {padding:20px 16px 48px}
+            .pages-pub-main {margin-left:0}
+            #pages-pub-toc {position:sticky;top:0;left:auto;width:auto;max-height:none;margin-bottom:16px;z-index:20}
+            .pages-pub-toc__head {padding:12px 14px}
+            .pages-pub-toc__toggle {display:inline-flex;align-items:center;justify-content:center}
+            #pages-pub-toc .pages-pub-toc__body {display:none}
+            #pages-pub-toc.is-open .pages-pub-toc__body {display:block}
+        }
         ${petalCSS}
     </style>
     ${this.getEnabledSnippetCSS()}
 </head>
 <body>
-<div class="protyle-wysiwyg${editor.displayBookmarkIcon === false ? "" : " protyle-wysiwyg--attr"}" 
-style="max-width: 800px;margin: 0 auto;" id="preview">${content}</div>
+<div class="pages-pub-layout">
+    <aside id="pages-pub-toc" aria-label="目录">
+        <div class="pages-pub-toc__head">
+            <div class="pages-pub-toc__title">目录</div>
+            <button type="button" class="pages-pub-toc__toggle" id="pages-pub-toc-toggle" aria-expanded="false">展开</button>
+        </div>
+        <div class="pages-pub-toc__body">
+            <div class="pages-pub-toc__list" id="pages-pub-toc-list">
+                <div class="pages-pub-toc-empty">正在生成目录...</div>
+            </div>
+        </div>
+    </aside>
+    <main class="pages-pub-main">
+        <div class="protyle-wysiwyg${editor.displayBookmarkIcon === false ? "" : " protyle-wysiwyg--attr"}" id="preview">${content}</div>
+    </main>
+</div>
 ${iconScripts}
 <script src="stage/build/export/protyle-method.js?v=${this.esc(version)}"></script>
 <script src="stage/protyle/js/lute/lute.min.js?v=${this.esc(version)}"></script>  
@@ -883,6 +1445,189 @@ document.querySelectorAll(".protyle-action__copy").forEach((item) => {
     event.preventDefault();
     event.stopPropagation();
   });
+});
+function initPagesPubToc() {
+  const preview = document.getElementById("preview");
+  const toc = document.getElementById("pages-pub-toc");
+  const list = document.getElementById("pages-pub-toc-list");
+  const toggle = document.getElementById("pages-pub-toc-toggle");
+  if (!preview || !toc || !list) return;
+
+  function getHeadingNodes(root) {
+    const selector = [
+      "h1", "h2", "h3", "h4",
+      "[data-type='NodeHeading']",
+      "[data-type~='NodeHeading']",
+      "[data-subtype='h1']",
+      "[data-subtype='h2']",
+      "[data-subtype='h3']",
+      "[data-subtype='h4']",
+      ".h1", ".h2", ".h3", ".h4"
+    ].join(",");
+    const seen = new Set();
+    return Array.from(root.querySelectorAll(selector))
+      .filter((node) => {
+        if (seen.has(node)) return false;
+        seen.add(node);
+        if (toc.contains(node)) return false;
+        const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
+        return !!text;
+      })
+      .map((node) => {
+        const tag = node.tagName ? node.tagName.toLowerCase() : "";
+        let level = 2;
+        const tagMatch = tag.match(/^h([1-4])$/);
+        if (tagMatch) {
+          level = Number(tagMatch[1]);
+        } else {
+          const subtype = node.getAttribute("data-subtype") || "";
+          const subtypeMatch = subtype.match(/^h([1-4])$/i);
+          if (subtypeMatch) {
+            level = Number(subtypeMatch[1]);
+          } else if (node.classList) {
+            for (let i = 1; i <= 4; i += 1) {
+              if (node.classList.contains("h" + i)) {
+                level = i;
+                break;
+              }
+            }
+          }
+        }
+        return {
+          node,
+          level,
+          text: String(node.textContent || "").replace(/\s+/g, " ").trim()
+        };
+      });
+  }
+
+  function slugify(text) {
+    const input = String(text || "").trim().toLowerCase();
+    const normalized = input.normalize ? input.normalize("NFKD") : input;
+    const withoutMarks = normalized.replace(/[\\u0300-\\u036f]/g, "");
+    const cleaned = withoutMarks
+      .replace(/[^\\w\\u4e00-\\u9fff\\-\\s]/g, " ")
+      .replace(/[_\\s]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return cleaned || "section";
+  }
+
+  const headings = getHeadingNodes(preview);
+  console.debug("[Pages Publisher] TOC headings:", headings.length);
+  if (!headings.length) {
+    toc.classList.add("pages-pub-toc--empty");
+    document.body.classList.add("pages-pub-no-toc");
+    list.innerHTML = '<div class="pages-pub-toc-empty">暂无目录</div>';
+    return;
+  }
+
+  toc.classList.remove("pages-pub-toc--empty");
+  document.body.classList.remove("pages-pub-no-toc");
+
+  const documentIds = Array.from(document.querySelectorAll("[id]")).map((el) => el.id).filter(Boolean);
+  const idCounts = documentIds.reduce((acc, id) => {
+    acc[id] = (acc[id] || 0) + 1;
+    return acc;
+  }, {});
+  const usedIds = new Set();
+  let activeId = "";
+
+  function ensureId(node, text) {
+    const current = (node.getAttribute("id") || "").trim();
+    if (current && (idCounts[current] || 0) === 1 && !usedIds.has(current)) {
+      usedIds.add(current);
+      return current;
+    }
+    const base = slugify(text || "heading");
+    let id = base;
+    let index = 1;
+    while (usedIds.has(id)) {
+      id = base + "-" + index;
+      index += 1;
+    }
+    node.id = id;
+    usedIds.add(id);
+    return id;
+  }
+
+  list.innerHTML = "";
+  const links = [];
+  headings.forEach((item) => {
+    const id = ensureId(item.node, item.text);
+    const link = document.createElement("a");
+    link.className = "pages-pub-toc-link toc-level-" + Math.min(Math.max(item.level, 1), 4);
+    link.href = "#" + encodeURIComponent(id);
+    link.textContent = item.text;
+    link.dataset.targetId = id;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const target = document.getElementById(id);
+      if (!target) return;
+      const top = target.getBoundingClientRect().top + window.scrollY - 24;
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      if (history && typeof history.replaceState === "function") {
+        history.replaceState(null, "", "#" + encodeURIComponent(id));
+      }
+      if (window.innerWidth <= 1100) {
+        toc.classList.remove("is-open");
+        if (toggle) {
+          toggle.textContent = "展开";
+          toggle.setAttribute("aria-expanded", "false");
+        }
+      }
+    });
+    list.appendChild(link);
+    links.push(link);
+  });
+
+  function setActive(id) {
+    if (!id || id === activeId) return;
+    activeId = id;
+    links.forEach((item) => {
+      item.classList.toggle("active", item.dataset.targetId === id);
+    });
+  }
+
+  function syncActiveHeading() {
+    let current = headings[0] || null;
+    for (const item of headings) {
+      const top = item.node.getBoundingClientRect().top;
+      if (top <= 80) {
+        current = item;
+      } else {
+        break;
+      }
+    }
+    if (current && current.node.id) setActive(current.node.id);
+  }
+
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      const isOpen = toc.classList.toggle("is-open");
+      toggle.textContent = isOpen ? "收起" : "展开";
+      toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    });
+  }
+
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (visible && visible.target && visible.target.id) {
+        setActive(visible.target.id);
+      }
+    }, { rootMargin: "-10% 0px -75% 0px", threshold: [0, 1] });
+    headings.forEach((item) => observer.observe(item.node));
+  } else {
+    window.addEventListener("scroll", syncActiveHeading, { passive: true });
+  }
+  if (headings[0] && headings[0].node.id) setActive(headings[0].node.id);
+  syncActiveHeading();
+}
+requestAnimationFrame(() => {
+  setTimeout(initPagesPubToc, 0);
 });
 </script>
 ${this.getEnabledSnippetJS()}</body></html>`;
@@ -1097,7 +1842,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     }
 
     // === Git push ===
-    async gitPush(repoPath, title, scopeDir) {
+    async gitPush(repoPath, title, scopeDir, commitMessage) {
         let committed = false;
         try {
             const o={cwd:repoPath};
@@ -1123,7 +1868,8 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
                 return;
             }
             this.setProgress(86, "Git 创建提交...");
-            await this.runCommand(`git commit -m "Publish SiYuan HTML: ${title.replace(/"/g,'\\"')}"`,o);
+            const finalMessage = commitMessage || `Publish SiYuan HTML: ${title}`;
+            await this.runCommand(`git commit -m "${String(finalMessage || "").replace(/"/g,'\\"')}"`,o);
             committed = true;
             this.setProgress(92, "推送到远程仓库...");
             showMessage("推送中...",2000,"info");
@@ -1185,6 +1931,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
 
     fname(s){return(s||"untitled").replace(/[<>:"/\\|?*]/g,"-").replace(/\s+/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"").substring(0,100)||"untitled";}
     esc(s){return s?String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"):"";}
+    escAttr(s){return this.esc(s).replace(/'/g,"&#39;");}
 }
 
 module.exports = PagesPublisher;
