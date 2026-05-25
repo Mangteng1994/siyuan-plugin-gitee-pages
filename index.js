@@ -226,40 +226,76 @@ class PagesPublisher extends Plugin {
             if (container) {
                 container.classList.add("pp-content");
             }
-            this.applySettingHelpIcons(dialog);
         } catch (err) {
             console.error("[siyuan-plugin-gitee-pages] markSettingDialog failed:", err);
         }
     }
 
-    applySettingHelpIcons(dialog) {
-        const helpMap = {
-            "托管平台": "选择发布到 Gitee Pages 或 GitHub Pages",
-            "本地仓库路径": "Pages 仓库在本地的克隆路径",
-            "Pages URL": "发布后的访问地址",
-            "站点标题": "HTML 页面顶部显示的站点名称",
-            "自动 Git 推送": "导出 HTML 后自动 commit 并 push 到远程仓库",
-        };
+    decorateSettingHelpIcons() {
+        const dialogs = Array.from(document.querySelectorAll(".b3-dialog__container"));
+        const dialog = dialogs.reverse().find((item) => {
+            const text = item.querySelector(".b3-dialog__header")?.textContent || "";
+            return text.includes("Pages 发布");
+        }) || dialogs[dialogs.length - 1];
+        if (!dialog) return;
+        const helpDefs = [
+            {
+                selector: ".pp-help-platform",
+                title: "托管平台",
+                help: "选择发布到 Gitee Pages 或 GitHub Pages",
+            },
+            {
+                selector: ".pp-help-repo",
+                title: "本地仓库路径",
+                help: "Pages 仓库在本地的克隆路径",
+            },
+            {
+                selector: ".pp-help-url",
+                title: "Pages URL",
+                help: "发布后的访问地址",
+            },
+            {
+                selector: ".pp-help-title",
+                title: "站点标题",
+                help: "HTML 页面顶部显示的站点名称",
+            },
+            {
+                selector: ".pp-help-auto",
+                title: "自动 Git 推送",
+                help: "导出 HTML 后自动 commit 并 push 到远程仓库",
+            },
+        ];
         try {
-            const labels = Array.from(dialog.querySelectorAll(".b3-label.pp-field"));
-            labels.forEach((label) => {
+            helpDefs.forEach((def) => {
+                const label = dialog.querySelector(def.selector);
+                if (!label) {
+                    console.warn("[siyuan-plugin-gitee-pages] help target not found:", def.selector);
+                    return;
+                }
                 const textWrap = label.querySelector(".b3-label__text");
-                const titleNode = textWrap?.querySelector("span:first-child");
-                if (!textWrap || !titleNode) return;
-                const titleText = String(titleNode.textContent || "").trim();
-                const helpText = helpMap[titleText];
-                if (!helpText) return;
-                if (titleNode.querySelector(".pp-help")) return;
+                if (!textWrap) {
+                    console.warn("[siyuan-plugin-gitee-pages] help textWrap not found:", def.selector);
+                    return;
+                }
+                const existing = textWrap.querySelector(".pp-label-title-row");
+                if (existing) existing.remove();
+                textWrap.querySelectorAll(".pp-help").forEach((node) => node.remove());
+                const row = document.createElement("span");
+                row.className = "pp-label-title-row";
+                const title = document.createElement("span");
+                title.className = "pp-label-title";
+                title.textContent = def.title;
                 const help = document.createElement("span");
                 help.className = "pp-help";
                 help.textContent = "?";
-                help.title = helpText;
-                help.setAttribute("aria-label", helpText);
-                textWrap.setAttribute("data-help-hidden", "true");
-                titleNode.appendChild(help);
+                help.title = def.help;
+                help.setAttribute("aria-label", def.help);
+                row.appendChild(title);
+                row.appendChild(help);
+                textWrap.prepend(row);
             });
         } catch (err) {
-            console.error("[siyuan-plugin-gitee-pages] applySettingHelpIcons failed:", err);
+            console.error("[siyuan-plugin-gitee-pages] decorateSettingHelpIcons failed:", err);
         }
     }
 
@@ -326,6 +362,16 @@ class PagesPublisher extends Plugin {
                 display: inline-flex;
                 align-items: center;
                 gap: 6px;
+            }
+            .pp-label-title-row {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                line-height: 1.4;
+            }
+            .pp-label-title {
+                display: inline-flex;
+                align-items: center;
             }
             .config__tab-container .b3-label.pp-field .b3-label__text > :not(:first-child) {
                 display: none !important;
@@ -1152,7 +1198,7 @@ class PagesPublisher extends Plugin {
             title: "托管平台",
             description: "",
             direction: "row",
-            className: "pp-field pp-section-card pp-section-platform",
+            className: "pp-field pp-section-card pp-section-platform pp-help-platform",
             createActionElement: () => {
                 const wrap = document.createElement("div");
                 wrap.className = "pp-platform-cards";
@@ -1182,7 +1228,7 @@ class PagesPublisher extends Plugin {
             title: "本地仓库路径",
             description: "",
             direction: "row",
-            className: "pp-field pp-config-item pp-config-start",
+            className: "pp-field pp-config-item pp-config-start pp-help-repo",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1201,7 +1247,7 @@ class PagesPublisher extends Plugin {
             title: "Pages URL",
             description: "",
             direction: "row",
-            className: "pp-field pp-config-item pp-config-mid",
+            className: "pp-field pp-config-item pp-config-mid pp-help-url",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1220,7 +1266,7 @@ class PagesPublisher extends Plugin {
             title: "站点标题",
             description: "",
             direction: "row",
-            className: "pp-field pp-config-item pp-config-mid",
+            className: "pp-field pp-config-item pp-config-mid pp-help-title",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1238,7 +1284,7 @@ class PagesPublisher extends Plugin {
         this.setting.addItem({
             title: "自动 Git 推送",
             description: "",
-            className: "pp-field pp-config-item pp-config-end pp-switch-row",
+            className: "pp-field pp-config-item pp-config-end pp-switch-row pp-help-auto",
             createActionElement: () => {
                 const inp = document.createElement("input");
                 inp.type = "checkbox";
@@ -1287,8 +1333,17 @@ class PagesPublisher extends Plugin {
         });
 
         this.setting.open(this.displayName || "Pages 发布");
-        requestAnimationFrame(() => this.markSettingDialog());
-        setTimeout(() => this.markSettingDialog(), 80);
+        requestAnimationFrame(() => {
+            this.markSettingDialog();
+            this.decorateSettingHelpIcons();
+        });
+        setTimeout(() => {
+            this.markSettingDialog();
+            this.decorateSettingHelpIcons();
+        }, 80);
+        setTimeout(() => {
+            this.decorateSettingHelpIcons();
+        }, 200);
     }
 
     buildShareListElement() {
