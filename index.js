@@ -271,6 +271,23 @@ class PagesPublisher extends Plugin {
         return wrap;
     }
 
+    createAutoCommitSwitch(data) {
+        const wrap = document.createElement("div");
+        wrap.className = "pp-switch-wrap";
+
+        const inp = document.createElement("input");
+        inp.type = "checkbox";
+        inp.className = "b3-switch pp-auto-commit-switch";
+        inp.checked = data.autoCommit !== false;
+        inp.addEventListener("change", async () => {
+            data.autoCommit = inp.checked;
+            await this.persistConfigAndWait(data);
+        });
+
+        wrap.appendChild(inp);
+        return wrap;
+    }
+
     injectSettingStyle() {
         const id = "siyuan-pages-pub-setting-style";
         let style = document.getElementById(id);
@@ -369,7 +386,11 @@ class PagesPublisher extends Plugin {
             .pp-setting-control {
                 justify-content: flex-start;
             }
-            .pp-setting-control > * {
+            .pp-setting-control .pp-input {
+                width: 100%;
+                min-width: 0;
+            }
+            .pp-setting-control .pp-platform-cards {
                 width: 100%;
                 min-width: 0;
             }
@@ -378,6 +399,24 @@ class PagesPublisher extends Plugin {
             }
             .pp-setting-control--end > * {
                 width: auto;
+            }
+            .pp-setting-control--switch {
+                justify-content: flex-end;
+            }
+            .pp-switch-wrap {
+                width: 100%;
+                min-height: 36px;
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+            }
+            .pp-switch-wrap .b3-switch,
+            .pp-switch-wrap .pp-auto-commit-switch {
+                width: auto !important;
+                min-width: unset !important;
+                max-width: none !important;
+                flex: 0 0 auto !important;
+                margin: 0 !important;
             }
             .config__tab-container .b3-label.pp-field .b3-switch {
                 margin-left: 0 !important;
@@ -785,6 +824,14 @@ class PagesPublisher extends Plugin {
                 }
                 .pp-setting-control--end > * {
                     width: 100%;
+                }
+                .pp-setting-control--switch > .pp-switch-wrap {
+                    width: 100% !important;
+                }
+                .pp-switch-wrap .b3-switch,
+                .pp-switch-wrap .pp-auto-commit-switch {
+                    width: auto !important;
+                    flex: 0 0 auto !important;
                 }
                 .pp-platform-cards {
                     grid-template-columns: 1fr 1fr;
@@ -1279,15 +1326,10 @@ class PagesPublisher extends Plugin {
             description: "",
             className: "pp-field pp-custom-host pp-config-item pp-config-end pp-switch-row",
             createActionElement: () => {
-                const inp = document.createElement("input");
-                inp.type = "checkbox";
-                inp.className = "b3-switch fn__flex-center";
-                inp.checked = data.autoCommit !== false;
-                inp.addEventListener("change", () => { data.autoCommit=inp.checked; that.persistConfig(data); });
                 return this.createCustomSettingField({
                     title: "自动 Git 推送",
-                    actionElement: inp,
-                    actionClassName: "pp-setting-control--end",
+                    actionElement: this.createAutoCommitSwitch(data),
+                    actionClassName: "pp-setting-control--switch",
                 });
             },
         });
