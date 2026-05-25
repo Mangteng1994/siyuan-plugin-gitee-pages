@@ -1531,10 +1531,10 @@ class PagesPublisher extends Plugin {
                 return;
             }
             try {
-                await this.pushPendingCommits(record.repoPath);
+                await this.squashAndForcePush(record.repoPath);
                 this.renderShareList(container);
             } catch (e) {
-                // error already shown in pushPendingCommits
+                // error already shown in squashAndForcePush
                 this.renderShareList(container);
             }
         });
@@ -1909,7 +1909,6 @@ class PagesPublisher extends Plugin {
                 title: record.title,
                 forceSlug: record.slug,
                 platform: record.platform,
-                skipAutoPush: true,
             });
             if (result?.record && !result?.pushFailed) {
                 showMessage(`分享已更新: ${result.record.url}`, 4000, "info");
@@ -3013,14 +3012,28 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         }
     }
 
-    async pushPendingCommits(repoPath) {
+    async squashAndForcePush(repoPath) {
         try {
             const o = { cwd: repoPath };
             await this.runCommand("git rev-parse --git-dir", o);
-            this.setProgress(88, "补推远程...");
-            showMessage("补推远程...", 2000, "info");
-            await this.runGitPushWithRetry(o);
-            showMessage("补推远程成功", 3000, "info");
+            this.setProgress(88, "清理历史并补推...");
+            showMessage("清理历史并补推...", 2000, "info");
+            // Squash all local commits into one
+            await this.runCommand("git reset --soft origin/main", o);
+            await this.runCommand("git add -A", o);
+            // Check if there is anything to commit
+            let hasChanges = false;
+            try {
+                await this.runCommand("git diff --cached --quiet", o);
+            } catch (e) {
+                hasChanges = true;
+            }
+            if (hasChanges) {
+                await this.runCommand('git commit -m "squash and push"', o);
+            }
+            // Force push
+            await this.runCommand("git push --force-with-lease", o);
+            showMessage("清理并补推成功", 3000, "info");
             // Update all share records for this repoPath to pushStatus=success
             const records = this.getShareRecords();
             let updated = false;
@@ -3040,7 +3053,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             const errorType = this.classifyGitPushError(err);
             const hint = this.buildGitPushHint(errorType);
             err.gitPushErrorType = errorType;
-            showMessage(`补推远程失败: ${hint}`, 6000, "error");
+            showMessage(`清理并补推失败: ${hint}`, 6000, "error");
             // Update records with failure
             const records = this.getShareRecords();
             for (const r of records) {
