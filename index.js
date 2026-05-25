@@ -213,6 +213,554 @@ class PagesPublisher extends Plugin {
         setting.open(this.displayName || "Pages 发布");
     }
 
+    markSettingDialog() {
+        try {
+            const dialogs = Array.from(document.querySelectorAll(".b3-dialog__container"));
+            const dialog = dialogs.reverse().find((item) => {
+                const text = item.querySelector(".b3-dialog__header")?.textContent || "";
+                return text.includes("Pages 发布");
+            }) || dialogs[dialogs.length - 1];
+            if (!dialog) return;
+            dialog.classList.add("pp-setting-dialog");
+            const container = dialog.querySelector(".config__tab-container");
+            if (container) {
+                container.classList.add("pp-content");
+            }
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] markSettingDialog failed:", err);
+        }
+    }
+
+    injectSettingStyle() {
+        const id = "siyuan-pages-pub-setting-style";
+        let style = document.getElementById(id);
+        if (!style) {
+            style = document.createElement("style");
+            style.id = id;
+            document.head.appendChild(style);
+        }
+        style.textContent = `
+            .pp-setting-dialog {
+                width: min(720px, 92vw) !important;
+                height: min(82vh, 820px) !important;
+                max-height: 82vh !important;
+                min-height: 620px !important;
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            .pp-setting-dialog .b3-dialog__header {
+                flex: 0 0 auto !important;
+            }
+            .pp-setting-dialog .b3-dialog__body {
+                flex: 1 1 auto !important;
+                min-height: 0 !important;
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            .pp-setting-dialog .b3-dialog__content {
+                flex: 1 1 auto !important;
+                min-height: 0 !important;
+                overflow-y: auto !important;
+                overflow-x: hidden !important;
+                padding: 18px 24px !important;
+            }
+            .pp-setting-dialog .pp-content,
+            .pp-setting-dialog .b3-dialog__content > .config__tab-container {
+                width: 100% !important;
+                max-width: 640px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                padding-bottom: 10px !important;
+            }
+            .config__tab-container .b3-label.pp-field {
+                min-height: 0 !important;
+                height: auto !important;
+                padding: 9px 0 !important;
+                align-items: center !important;
+                margin: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-field .b3-label__text {
+                flex: 0 0 240px !important;
+                min-width: 200px !important;
+                margin: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-field .b3-label__text > span {
+                display: block;
+            }
+            .config__tab-container .b3-label.pp-field .b3-label__text > span:first-child {
+                font-size: 13px;
+                font-weight: 500;
+                color: var(--b3-theme-on-surface);
+            }
+            .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
+                margin-top: 2px;
+                font-size: 12px;
+                line-height: 1.4;
+                color: var(--b3-theme-on-surface-light);
+            }
+            .config__tab-container .b3-label.pp-field .b3-label__action {
+                flex: 1 1 auto !important;
+                width: auto !important;
+                min-width: 0 !important;
+                max-width: none !important;
+                margin-left: 14px !important;
+            }
+            .config__tab-container .b3-label.pp-field .b3-switch {
+                margin-left: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-section-card {
+                border: 1px solid var(--b3-border-color) !important;
+                border-radius: 12px !important;
+                background: var(--b3-theme-surface) !important;
+                padding: 14px 16px !important;
+                margin: 0 0 14px !important;
+            }
+            .config__tab-container .b3-label.pp-section-share .b3-label__text {
+                display: none !important;
+            }
+            .config__tab-container .b3-label.pp-section-share .b3-label__action {
+                width: 100% !important;
+                margin: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-config-item {
+                background: var(--b3-theme-surface) !important;
+                margin: 0 !important;
+                padding: 9px 14px !important;
+                border-left: 1px solid var(--b3-border-color) !important;
+                border-right: 1px solid var(--b3-border-color) !important;
+                border-radius: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-config-start {
+                border-top: 1px solid var(--b3-border-color) !important;
+                border-top-left-radius: 12px !important;
+                border-top-right-radius: 12px !important;
+                padding-top: 12px !important;
+            }
+            .config__tab-container .b3-label.pp-config-mid,
+            .config__tab-container .b3-label.pp-config-end {
+                border-top: 1px solid color-mix(in srgb, var(--b3-border-color) 60%, transparent) !important;
+            }
+            .config__tab-container .b3-label.pp-config-end {
+                border-bottom: 1px solid var(--b3-border-color) !important;
+                border-bottom-left-radius: 12px !important;
+                border-bottom-right-radius: 12px !important;
+                padding-bottom: 12px !important;
+                margin: 0 0 12px !important;
+            }
+            .config__tab-container .b3-label.pp-switch-row {
+                align-items: center !important;
+            }
+            .config__tab-container .b3-label.pp-switch-row .b3-label__action {
+                display: flex !important;
+                justify-content: flex-end !important;
+            }
+            .pp-platform-cards {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            .pp-platform-card {
+                min-width: 0;
+                height: 38px;
+                padding: 0 14px;
+                border: 1px solid var(--b3-border-color);
+                border-radius: 10px;
+                cursor: pointer;
+                transition: all .2s;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                font-size: 13px;
+                font-weight: 500;
+                background: var(--b3-theme-background);
+            }
+            .pp-platform-card:hover {
+                border-color: var(--b3-theme-primary-light);
+                background: color-mix(in srgb, var(--b3-theme-primary-lightest) 72%, var(--b3-theme-background));
+            }
+            .pp-platform-card.active {
+                border-color: color-mix(in srgb, var(--b3-theme-primary) 78%, var(--b3-theme-background));
+                background: var(--b3-theme-primary-lightest);
+                box-shadow: 0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 32%, transparent);
+            }
+            .pp-platform-card .pp-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--b3-border-color);
+                flex-shrink: 0;
+                transition: background .2s;
+            }
+            .pp-platform-card.active .pp-dot {
+                background: var(--b3-theme-primary);
+                box-shadow: 0 0 0 3px var(--b3-theme-primary-lightest);
+            }
+            .pp-platform-card .pp-name {
+                font-size: 13px;
+                font-weight: 600;
+            }
+            .pp-input {
+                width: 100%;
+                height: 36px;
+                padding: 0 12px;
+                font-size: 13px;
+                border: 1.5px solid var(--b3-border-color);
+                border-radius: 8px;
+                background: var(--b3-theme-background);
+                color: var(--b3-theme-on-surface);
+                outline: none;
+                transition: border-color .2s, box-shadow .2s;
+                font-family: inherit;
+            }
+            .pp-input:hover {
+                border-color: var(--b3-theme-primary-light);
+            }
+            .pp-input:focus {
+                border-color: var(--b3-theme-primary);
+                box-shadow: 0 0 0 3px var(--b3-theme-primary-lightest);
+            }
+            .pp-input::placeholder {
+                color: var(--b3-theme-on-surface-light);
+                opacity: .4;
+            }
+            .pp-publish-btn {
+                height: 36px;
+                padding: 0 14px;
+                font-size: 13px;
+                font-weight: 600;
+                border: none;
+                border-radius: 10px;
+                cursor: pointer;
+                color: #fff;
+                background: linear-gradient(135deg, var(--b3-theme-primary), color-mix(in srgb, var(--b3-theme-primary) 70%, #000));
+                box-shadow: 0 2px 10px rgba(0,0,0,.08);
+                transition: all .25s;
+                text-align: center;
+            }
+            .pp-setting-dialog .pp-publish-row {
+                display: flex !important;
+                justify-content: center !important;
+                align-items: center !important;
+                padding: 8px 0 10px !important;
+                margin: 0 0 10px !important;
+                border-bottom: 0 !important;
+            }
+            .pp-setting-dialog .pp-publish-row .pp-publish-button,
+            .pp-setting-dialog .pp-publish-button {
+                width: 168px !important;
+                min-width: 168px !important;
+                max-width: 168px !important;
+                flex: 0 0 168px !important;
+                height: 36px !important;
+                padding: 0 14px !important;
+                box-sizing: border-box !important;
+                text-align: center !important;
+            }
+            .pp-publish-btn:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 4px 18px rgba(0,0,0,.12);
+            }
+            .pp-publish-btn:active {
+                transform: translateY(0);
+            }
+            .pp-publish-btn:disabled {
+                opacity: .5;
+                cursor: not-allowed;
+                transform: none;
+            }
+            .pp-setting-dialog .b3-label.pp-publish-row-host {
+                border-bottom: 0 !important;
+                margin: 0 0 10px !important;
+                padding: 8px 0 10px !important;
+                background: transparent !important;
+                border-left: 0 !important;
+                border-right: 0 !important;
+                border-top: 0 !important;
+                border-radius: 0 !important;
+            }
+            .config__tab-container .b3-label.pp-publish-row-host .b3-label__text {
+                display: none !important;
+            }
+            .config__tab-container .b3-label.pp-publish-row-host .b3-label__action {
+                width: 100% !important;
+                margin: 0 !important;
+            }
+            .pp-share-panel {
+                border: 1px solid var(--b3-border-color);
+                border-radius: 12px;
+                background: var(--b3-theme-surface);
+                width: 100%;
+                max-width: 640px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                box-sizing: border-box !important;
+                padding: 14px 16px;
+            }
+            .pp-share-head {
+                width: 100%;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 12px;
+                flex-wrap: wrap;
+            }
+            .pp-share-toolbar {
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                gap: 10px;
+                flex: 1 1 320px;
+                min-width: 0;
+                flex-wrap: wrap;
+            }
+            .pp-share-title {
+                font-size: 15px;
+                font-weight: 600;
+                color: var(--b3-theme-on-surface);
+            }
+            .pp-share-title-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-width: 0;
+            }
+            .pp-share-count {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-width: 28px;
+                height: 22px;
+                padding: 0 8px;
+                border-radius: 999px;
+                font-size: 12px;
+                font-weight: 500;
+                color: var(--b3-theme-on-surface-light);
+                background: color-mix(in srgb, var(--b3-theme-surface) 78%, var(--b3-theme-background));
+                border: 1px solid var(--b3-border-color);
+                flex: 0 0 auto;
+            }
+            .pp-share-subtitle {
+                margin-top: 4px;
+                color: var(--b3-theme-on-surface-light);
+                font-size: 12px;
+            }
+            .pp-share-refresh,
+            .pp-share-btn {
+                border: 1px solid var(--b3-border-color);
+                background: var(--b3-theme-background);
+                color: var(--b3-theme-on-background);
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 12px;
+                cursor: pointer;
+                transition: all .2s;
+            }
+            .pp-share-refresh:hover,
+            .pp-share-btn:hover {
+                border-color: var(--b3-theme-primary);
+                color: var(--b3-theme-primary);
+            }
+            .pp-share-refresh:disabled,
+            .pp-share-btn:disabled {
+                opacity: .55;
+                cursor: not-allowed;
+            }
+            .pp-share-search {
+                width: 240px;
+                max-width: 100%;
+                min-width: 180px;
+                padding: 8px 12px;
+                border: 1px solid var(--b3-border-color);
+                border-radius: 999px;
+                background: color-mix(in srgb, var(--b3-theme-surface) 82%, var(--b3-theme-background));
+                color: var(--b3-theme-on-surface);
+                font-size: 12px;
+                outline: none;
+                transition: border-color .2s, box-shadow .2s, background .2s;
+            }
+            .pp-share-search:hover {
+                border-color: var(--b3-theme-primary-light);
+            }
+            .pp-share-search:focus {
+                border-color: var(--b3-theme-primary);
+                box-shadow: 0 0 0 3px var(--b3-theme-primary-lightest);
+                background: var(--b3-theme-surface);
+            }
+            .pp-share-empty {
+                height: 72px;
+                padding: 0 12px;
+                border: 1px dashed var(--b3-border-color);
+                border-radius: 10px;
+                color: var(--b3-theme-on-surface-light);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                font-size: 13px;
+            }
+            .pp-share-list {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .pp-share-body {
+                max-height: none;
+                overflow: visible;
+                padding-right: 0;
+            }
+            .pp-share-card {
+                border: 1px solid var(--b3-border-color);
+                border-radius: 12px;
+                background: var(--b3-theme-background);
+                padding: 12px;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .pp-share-card-head {
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                align-items: flex-start;
+            }
+            .pp-share-card-title {
+                font-size: 14px;
+                font-weight: 600;
+                line-height: 1.5;
+                color: var(--b3-theme-on-background);
+                word-break: break-word;
+            }
+            .pp-share-card-time {
+                flex: 0 0 auto;
+                font-size: 12px;
+                color: var(--b3-theme-on-surface-light);
+                white-space: nowrap;
+            }
+            .pp-share-card-meta {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                font-size: 12px;
+                color: var(--b3-theme-on-surface-light);
+            }
+            .pp-share-chip {
+                display: inline-flex;
+                align-items: center;
+                padding: 2px 8px;
+                border-radius: 999px;
+                background: var(--b3-theme-primary-lightest);
+                color: var(--b3-theme-primary);
+            }
+            .pp-share-grid {
+                display: grid;
+                grid-template-columns: minmax(88px, 104px) 1fr;
+                gap: 8px 10px;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            .pp-share-grid-label {
+                color: var(--b3-theme-on-surface-light);
+            }
+            .pp-share-grid-value {
+                color: var(--b3-theme-on-background);
+                word-break: break-all;
+            }
+            .pp-share-grid-value--link {
+                min-width: 0;
+            }
+            .pp-share-url-link {
+                display: block;
+                max-width: 100%;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: var(--b3-theme-primary);
+                font-size: 12px;
+                text-decoration: none;
+            }
+            .pp-share-url-link:hover {
+                text-decoration: underline;
+            }
+            .pp-share-url-link:focus-visible {
+                outline: 2px solid var(--b3-theme-primary);
+                outline-offset: 2px;
+                border-radius: 4px;
+            }
+            .pp-share-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .pp-share-btn-danger:hover {
+                border-color: var(--b3-theme-error, #d23f31);
+                color: var(--b3-theme-error, #d23f31);
+            }
+            @media (max-width: 840px) {
+                .config__tab-container .b3-label.pp-field {
+                    align-items: flex-start !important;
+                }
+                .config__tab-container .b3-label.pp-field .b3-label__text {
+                    flex: none !important;
+                    min-width: 0 !important;
+                    margin-bottom: 8px !important;
+                }
+                .config__tab-container .b3-label.pp-field .b3-label__action {
+                    width: 100% !important;
+                    margin-left: 0 !important;
+                }
+                .pp-platform-cards {
+                    grid-template-columns: 1fr 1fr;
+                }
+                .pp-share-head,
+                .pp-share-card-head {
+                    flex-direction: column;
+                    align-items: stretch;
+                }
+                .pp-share-toolbar {
+                    width: 100%;
+                    justify-content: stretch;
+                    flex-wrap: wrap;
+                }
+                .pp-share-search {
+                    width: 100%;
+                    min-width: 0;
+                }
+                .pp-share-grid {
+                    grid-template-columns: 1fr;
+                }
+                .pp-share-card-time {
+                    white-space: normal;
+                }
+            }
+            @media (max-width: 720px) {
+                .pp-setting-dialog {
+                    width: 96vw !important;
+                    height: 90vh !important;
+                    max-height: 90vh !important;
+                    min-height: 0 !important;
+                }
+                .pp-setting-dialog .b3-dialog__content {
+                    padding: 14px !important;
+                }
+                .pp-platform-cards {
+                    grid-template-columns: 1fr;
+                }
+                .pp-share-toolbar {
+                    flex-direction: column;
+                    align-items: stretch;
+                }
+                .pp-setting-dialog .pp-publish-row .pp-publish-button,
+                .pp-setting-dialog .pp-publish-button {
+                    width: 168px !important;
+                    min-width: 168px !important;
+                    max-width: 168px !important;
+                    flex: 0 0 168px !important;
+                }
+            }
+        `;
+    }
+
     updateDocInfo(source = "active-protyle") {
         this.refreshLastActiveDocInfo(source).catch(() => {});
     }
@@ -542,480 +1090,9 @@ class PagesPublisher extends Plugin {
         const currentPlatform = () => data.platform || "gitee";
 
         this.refreshLastActiveDocInfo("panel-open").catch(() => {});
+        this.injectSettingStyle();
 
         this.setting = new Setting({ width: "min(720px, 92vw)", height: "min(82vh, 820px)" });
-
-        // ── 注入样式 ──
-        this.setting.addItem({
-            title: "", description: "",
-            createActionElement: () => {
-                const s = document.createElement("style");
-                s.textContent = `
-                    .pp-setting-dialog {
-                        width: min(720px, 92vw) !important;
-                        height: min(82vh, 820px) !important;
-                        max-height: 82vh !important;
-                        min-height: 620px !important;
-                        display: flex !important;
-                        flex-direction: column !important;
-                    }
-                    .pp-setting-dialog .b3-dialog__header {
-                        flex: 0 0 auto !important;
-                    }
-                    .pp-setting-dialog .b3-dialog__body {
-                        flex: 1 1 auto !important;
-                        min-height: 0 !important;
-                        display: flex !important;
-                        flex-direction: column !important;
-                    }
-                    .pp-setting-dialog .b3-dialog__content {
-                        flex: 1 1 auto !important;
-                        min-height: 0 !important;
-                        overflow-y: auto !important;
-                        overflow-x: hidden !important;
-                        padding: 18px 24px !important;
-                    }
-                    .pp-setting-dialog .b3-dialog__content > .config__tab-container {
-                        width: 100% !important;
-                        max-width: 680px !important;
-                        margin: 0 auto !important;
-                        padding-bottom: 10px !important;
-                    }
-                    .config__tab-container .b3-label.pp-field {
-                        min-height: 0 !important;
-                        height: auto !important;
-                        padding: 10px 0 !important;
-                        align-items: center !important;
-                        margin: 0 !important;
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__text {
-                        flex: 0 0 240px !important;
-                        min-width: 200px !important;
-                        margin: 0 !important;
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__text > span {
-                        display:block;
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__text > span:first-child {
-                        font-size: 13px;
-                        font-weight: 500;
-                        color: var(--b3-theme-on-surface);
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
-                        margin-top: 3px;
-                        font-size: 12px;
-                        line-height: 1.45;
-                        color: var(--b3-theme-on-surface-light);
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-label__action {
-                        flex: 1 1 auto !important;
-                        width: auto !important;
-                        min-width: 0 !important;
-                        max-width: none !important;
-                        margin-left: 14px !important;
-                    }
-                    .config__tab-container .b3-label.pp-field .b3-switch {
-                        margin-left: 0 !important;
-                    }
-
-                    .config__tab-container .b3-label.pp-section-card {
-                        border: 1px solid var(--b3-border-color) !important;
-                        border-radius: 12px !important;
-                        background: var(--b3-theme-surface) !important;
-                        padding: 14px 16px !important;
-                        margin: 0 0 14px !important;
-                    }
-                    .config__tab-container .b3-label.pp-section-share .b3-label__text {
-                        display: none !important;
-                    }
-                    .config__tab-container .b3-label.pp-section-share .b3-label__action {
-                        width: 100% !important;
-                        margin: 0 !important;
-                    }
-                    .config__tab-container .b3-label.pp-config-item {
-                        background: var(--b3-theme-surface) !important;
-                        margin: 0 !important;
-                        padding: 11px 16px !important;
-                        border-left: 1px solid var(--b3-border-color) !important;
-                        border-right: 1px solid var(--b3-border-color) !important;
-                        border-radius: 0 !important;
-                    }
-                    .config__tab-container .b3-label.pp-config-start {
-                        border-top: 1px solid var(--b3-border-color) !important;
-                        border-top-left-radius: 12px !important;
-                        border-top-right-radius: 12px !important;
-                        padding-top: 14px !important;
-                    }
-                    .config__tab-container .b3-label.pp-config-mid,
-                    .config__tab-container .b3-label.pp-config-end {
-                        border-top: 1px solid color-mix(in srgb, var(--b3-border-color) 60%, transparent) !important;
-                    }
-                    .config__tab-container .b3-label.pp-config-end {
-                        border-bottom: 1px solid var(--b3-border-color) !important;
-                        border-bottom-left-radius: 12px !important;
-                        border-bottom-right-radius: 12px !important;
-                        padding-bottom: 14px !important;
-                        margin: 0 0 14px !important;
-                    }
-                    .config__tab-container .b3-label.pp-switch-row {
-                        align-items: center !important;
-                    }
-                    .config__tab-container .b3-label.pp-switch-row .b3-label__action {
-                        display: flex !important;
-                        justify-content: flex-end !important;
-                    }
-
-                    .pp-platform-cards {
-                        display:grid;
-                        grid-template-columns: 1fr 1fr;
-                        gap:10px;
-                    }
-                    .pp-platform-card {
-                        min-width:0;
-                        height:38px;
-                        padding:0 14px;
-                        border:1px solid var(--b3-border-color);
-                        border-radius:10px; cursor:pointer; transition:all .2s;
-                        display:flex; align-items:center; gap:10px;
-                        font-size:13px; font-weight:500; background:var(--b3-theme-background);
-                    }
-                    .pp-platform-card:hover { border-color:var(--b3-theme-primary-light); background:color-mix(in srgb, var(--b3-theme-primary-lightest) 72%, var(--b3-theme-background)); }
-                    .pp-platform-card.active { border-color:color-mix(in srgb, var(--b3-theme-primary) 78%, var(--b3-theme-background)); background:var(--b3-theme-primary-lightest); box-shadow:0 0 0 1px color-mix(in srgb, var(--b3-theme-primary) 32%, transparent); }
-                    .pp-platform-card .pp-dot { width:10px;height:10px;border-radius:50%;background:var(--b3-border-color);flex-shrink:0;transition:background .2s; }
-                    .pp-platform-card.active .pp-dot { background:var(--b3-theme-primary);box-shadow:0 0 0 3px var(--b3-theme-primary-lightest); }
-                    .pp-platform-card .pp-name { font-size:13px;font-weight:600; }
-
-                    .pp-input {
-                        width:100%; height:36px; padding:0 12px; font-size:13px;
-                        border:1.5px solid var(--b3-border-color); border-radius:8px;
-                        background:var(--b3-theme-background); color:var(--b3-theme-on-surface);
-                        outline:none; transition:border-color .2s,box-shadow .2s; font-family:inherit;
-                    }
-                    .pp-input:hover { border-color:var(--b3-theme-primary-light); }
-                    .pp-input:focus { border-color:var(--b3-theme-primary); box-shadow:0 0 0 3px var(--b3-theme-primary-lightest); }
-                    .pp-input::placeholder { color:var(--b3-theme-on-surface-light);opacity:.4; }
-
-                    .pp-publish-btn {
-                        height:36px; padding:0 18px; font-size:13px; font-weight:600;
-                        border:none; border-radius:10px; cursor:pointer; color:#fff;
-                        background:linear-gradient(135deg,var(--b3-theme-primary),color-mix(in srgb,var(--b3-theme-primary) 70%,#000));
-                        box-shadow:0 2px 10px rgba(0,0,0,.08); transition:all .25s;
-                        text-align:center;
-                    }
-                    .pp-publish-row .pp-publish-button {
-                        width: 200px;
-                        min-width: 200px;
-                        max-width: 220px;
-                        flex: 0 0 auto;
-                        height: 38px;
-                    }
-                    .pp-publish-btn:hover { transform:translateY(-1px); box-shadow:0 4px 18px rgba(0,0,0,.12); }
-                    .pp-publish-btn:active { transform:translateY(0); }
-                    .pp-publish-btn:disabled { opacity:.5;cursor:not-allowed;transform:none; }
-                    .config__tab-container .b3-label.pp-publish-row-host {
-                        margin: 0 0 16px !important;
-                        padding: 14px 0 16px !important;
-                        background: transparent !important;
-                        border: 0 !important;
-                        border-bottom: 1px solid var(--b3-border-color) !important;
-                        border-radius: 0 !important;
-                    }
-                    .config__tab-container .b3-label.pp-publish-row-host .b3-label__text {
-                        display:none !important;
-                    }
-                    .config__tab-container .b3-label.pp-publish-row-host .b3-label__action {
-                        width:100% !important;
-                        margin:0 !important;
-                    }
-                    .pp-publish-row {
-                        display:flex;
-                        justify-content:center;
-                        align-items:center;
-                        gap:12px;
-                    }
-
-                    .pp-share-panel {
-                        border: 1px solid var(--b3-border-color);
-                        border-radius: 12px;
-                        background: var(--b3-theme-surface);
-                        width: 100%;
-                        padding: 14px 16px;
-                    }
-                    .pp-share-head {
-                        display:flex;
-                        align-items:center;
-                        justify-content:space-between;
-                        gap:12px;
-                        margin-bottom: 14px;
-                        flex-wrap:wrap;
-                    }
-                    .pp-share-toolbar {
-                        display:flex;
-                        align-items:center;
-                        justify-content:flex-end;
-                        gap:10px;
-                        flex:1 1 320px;
-                        min-width:0;
-                        flex-wrap:wrap;
-                    }
-                    .pp-share-title {
-                        font-size: 15px;
-                        font-weight: 600;
-                        color: var(--b3-theme-on-surface);
-                    }
-                    .pp-share-title-row {
-                        display:flex;
-                        align-items:center;
-                        gap:8px;
-                        min-width:0;
-                    }
-                    .pp-share-count {
-                        display:inline-flex;
-                        align-items:center;
-                        justify-content:center;
-                        min-width:28px;
-                        height:22px;
-                        padding:0 8px;
-                        border-radius:999px;
-                        font-size:12px;
-                        font-weight:500;
-                        color: var(--b3-theme-on-surface-light);
-                        background: color-mix(in srgb, var(--b3-theme-surface) 78%, var(--b3-theme-background));
-                        border: 1px solid var(--b3-border-color);
-                        flex:0 0 auto;
-                    }
-                    .pp-share-subtitle {
-                        margin-top: 4px;
-                        color: var(--b3-theme-on-surface-light);
-                        font-size: 12px;
-                    }
-                    .pp-share-refresh,
-                    .pp-share-btn {
-                        border: 1px solid var(--b3-border-color);
-                        background: var(--b3-theme-background);
-                        color: var(--b3-theme-on-background);
-                        border-radius: 8px;
-                        padding: 6px 10px;
-                        font-size: 12px;
-                        cursor: pointer;
-                        transition: all .2s;
-                    }
-                    .pp-share-refresh:hover,
-                    .pp-share-btn:hover {
-                        border-color: var(--b3-theme-primary);
-                        color: var(--b3-theme-primary);
-                    }
-                    .pp-share-refresh:disabled,
-                    .pp-share-btn:disabled {
-                        opacity: .55;
-                        cursor: not-allowed;
-                    }
-                    .pp-share-search {
-                        width: 260px;
-                        max-width: 100%;
-                        min-width: 180px;
-                        padding: 8px 12px;
-                        border: 1px solid var(--b3-border-color);
-                        border-radius: 999px;
-                        background: color-mix(in srgb, var(--b3-theme-surface) 82%, var(--b3-theme-background));
-                        color: var(--b3-theme-on-surface);
-                        font-size: 12px;
-                        outline: none;
-                        transition: border-color .2s, box-shadow .2s, background .2s;
-                    }
-                    .pp-share-search:hover {
-                        border-color: var(--b3-theme-primary-light);
-                    }
-                    .pp-share-search:focus {
-                        border-color: var(--b3-theme-primary);
-                        box-shadow: 0 0 0 3px var(--b3-theme-primary-lightest);
-                        background: var(--b3-theme-surface);
-                    }
-                    .pp-share-empty {
-                        height: 72px;
-                        padding: 0 12px;
-                        border: 1px dashed var(--b3-border-color);
-                        border-radius: 10px;
-                        color: var(--b3-theme-on-surface-light);
-                        display:flex;
-                        align-items:center;
-                        justify-content:center;
-                        text-align: center;
-                        font-size: 13px;
-                    }
-                    .pp-share-list {
-                        display:flex;
-                        flex-direction:column;
-                        gap:12px;
-                    }
-                    .pp-share-body {
-                        max-height: none;
-                        overflow: visible;
-                        padding-right: 0;
-                    }
-                    .pp-share-card {
-                        border: 1px solid var(--b3-border-color);
-                        border-radius: 12px;
-                        background: var(--b3-theme-background);
-                        padding: 12px;
-                        display:flex;
-                        flex-direction:column;
-                        gap:12px;
-                    }
-                    .pp-share-card-head {
-                        display:flex;
-                        justify-content:space-between;
-                        gap:12px;
-                        align-items:flex-start;
-                    }
-                    .pp-share-card-title {
-                        font-size: 14px;
-                        font-weight: 600;
-                        line-height: 1.5;
-                        color: var(--b3-theme-on-background);
-                        word-break: break-word;
-                    }
-                    .pp-share-card-time {
-                        flex: 0 0 auto;
-                        font-size: 12px;
-                        color: var(--b3-theme-on-surface-light);
-                        white-space: nowrap;
-                    }
-                    .pp-share-card-meta {
-                        display:flex;
-                        flex-wrap:wrap;
-                        gap:6px;
-                        font-size: 12px;
-                        color: var(--b3-theme-on-surface-light);
-                    }
-                    .pp-share-chip {
-                        display:inline-flex;
-                        align-items:center;
-                        padding:2px 8px;
-                        border-radius:999px;
-                        background: var(--b3-theme-primary-lightest);
-                        color: var(--b3-theme-primary);
-                    }
-                    .pp-share-grid {
-                        display:grid;
-                        grid-template-columns: minmax(88px, 104px) 1fr;
-                        gap:8px 10px;
-                        font-size: 12px;
-                        line-height: 1.5;
-                    }
-                    .pp-share-grid-label {
-                        color: var(--b3-theme-on-surface-light);
-                    }
-                    .pp-share-grid-value {
-                        color: var(--b3-theme-on-background);
-                        word-break: break-all;
-                    }
-                    .pp-share-grid-value--link {
-                        min-width: 0;
-                    }
-                    .pp-share-url-link {
-                        display:block;
-                        max-width:100%;
-                        overflow:hidden;
-                        text-overflow:ellipsis;
-                        white-space:nowrap;
-                        color: var(--b3-theme-primary);
-                        font-size: 12px;
-                        text-decoration:none;
-                    }
-                    .pp-share-url-link:hover {
-                        text-decoration:underline;
-                    }
-                    .pp-share-url-link:focus-visible {
-                        outline: 2px solid var(--b3-theme-primary);
-                        outline-offset: 2px;
-                        border-radius: 4px;
-                    }
-                    .pp-share-actions {
-                        display:flex;
-                        flex-wrap:wrap;
-                        gap:8px;
-                    }
-                    .pp-share-btn-danger:hover {
-                        border-color: var(--b3-theme-error, #d23f31);
-                        color: var(--b3-theme-error, #d23f31);
-                    }
-
-                    @media (max-width: 840px) {
-                        .config__tab-container .b3-label.pp-field {
-                            align-items: flex-start !important;
-                        }
-                        .config__tab-container .b3-label.pp-field .b3-label__text {
-                            flex: none !important;
-                            min-width: 0 !important;
-                            margin-bottom: 8px !important;
-                        }
-                        .config__tab-container .b3-label.pp-field .b3-label__action {
-                            width: 100% !important;
-                            margin-left: 0 !important;
-                        }
-                        .pp-platform-cards {
-                            grid-template-columns: 1fr 1fr;
-                        }
-                        .pp-share-head,
-                        .pp-share-card-head {
-                            flex-direction: column;
-                            align-items: stretch;
-                        }
-                        .pp-share-toolbar {
-                            width:100%;
-                            justify-content:stretch;
-                            flex-wrap:wrap;
-                        }
-                        .pp-share-search {
-                            width:100%;
-                            min-width:0;
-                        }
-                        .pp-share-grid {
-                            grid-template-columns: 1fr;
-                        }
-                        .pp-share-card-time {
-                            white-space: normal;
-                        }
-                    }
-                    @media (max-width: 720px) {
-                        .pp-setting-dialog {
-                            width: 96vw !important;
-                            height: 90vh !important;
-                            max-height: 90vh !important;
-                            min-height: 0 !important;
-                        }
-                        .pp-setting-dialog .b3-dialog__content {
-                            padding: 14px !important;
-                        }
-                        .pp-platform-cards {
-                            grid-template-columns: 1fr;
-                        }
-                        .pp-share-toolbar {
-                            flex-direction: column;
-                            align-items: stretch;
-                        }
-                        .pp-publish-btn {
-                            width: auto;
-                        }
-                        .pp-publish-row {
-                            justify-content: center;
-                        }
-                        .pp-publish-row .pp-publish-button {
-                            width: 200px;
-                            min-width: 200px;
-                            max-width: 220px;
-                            flex: 0 0 auto;
-                        }
-                    }
-                `;
-                requestAnimationFrame(() => {
-                    const dialog = s.closest(".b3-dialog__container");
-                    if (dialog) dialog.classList.add("pp-setting-dialog");
-                });
-                return s;
-            },
-        });
 
         // ── 平台选择 ──
         this.setting.addItem({
@@ -1157,6 +1234,8 @@ class PagesPublisher extends Plugin {
         });
 
         this.setting.open(this.displayName || "Pages 发布");
+        requestAnimationFrame(() => this.markSettingDialog());
+        setTimeout(() => this.markSettingDialog(), 80);
     }
 
     buildShareListElement() {
