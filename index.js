@@ -386,7 +386,7 @@ class PagesPublisher extends Plugin {
             .pp-setting-control {
                 justify-content: flex-start;
             }
-            .pp-setting-control .pp-input {
+            .pp-setting-control input:not([type="checkbox"]) {
                 width: 100%;
                 min-width: 0;
             }
@@ -412,10 +412,7 @@ class PagesPublisher extends Plugin {
             }
             .pp-switch-wrap .b3-switch,
             .pp-switch-wrap .pp-auto-commit-switch {
-                width: auto !important;
-                min-width: unset !important;
-                max-width: none !important;
-                flex: 0 0 auto !important;
+                flex: 0 0 auto;
                 margin: 0 !important;
             }
             .config__tab-container .b3-label.pp-field .b3-switch {
@@ -830,8 +827,7 @@ class PagesPublisher extends Plugin {
                 }
                 .pp-switch-wrap .b3-switch,
                 .pp-switch-wrap .pp-auto-commit-switch {
-                    width: auto !important;
-                    flex: 0 0 auto !important;
+                    flex: 0 0 auto;
                 }
                 .pp-platform-cards {
                     grid-template-columns: 1fr 1fr;
