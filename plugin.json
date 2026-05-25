@@ -1,6 +1,7 @@
 {
   "name": "siyuan-plugin-gitee-pages",
-  "author": "Codex",
+  "author": "Mangteng1994",
+  "url": "https://github.com/Mangteng1994/siyuan-plugin-gitee-pages",
   "version": "2.1.0",
   "minAppVersion": "3.0.0",
   "backends": ["windows", "linux", "darwin"],
