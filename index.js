@@ -11,6 +11,7 @@ const path = require("path");
 
 const STORAGE_KEY = "pages-pub-config";
 const STORAGE_FILE = "pages-pub-config";
+const SHARED_ASSETS_DIR = "pages-pub-assets";
 const execAsync = promisify(exec);
 
 class PagesPublisher extends Plugin {
@@ -970,13 +971,13 @@ class PagesPublisher extends Plugin {
         }
 
         this.setProgress(58, "生成 index.html...");
-        if (typeof r.data.content === "string" && r.data.content.trim()) {
-            fs.writeFileSync(
-                path.join(targetDir, "index.html"),
-                await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle),
-                "utf-8",
-            );
-        }
+            if (typeof r.data.content === "string" && r.data.content.trim()) {
+                fs.writeFileSync(
+                    path.join(targetDir, "index.html"),
+                    await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle, `../${SHARED_ASSETS_DIR}`),
+                    "utf-8",
+                );
+            }
 
         this.setProgress(68, "校验导出产物...");
         const resolved = this.resolveSiYuanExportOutput({
@@ -993,6 +994,9 @@ class PagesPublisher extends Plugin {
             showMessage("导出失败: 未找到index.html(SiYuan原生导出产物)v3.6.5", 6000, "error");
             return null;
         }
+
+        this.setProgress(74, "归并公共资源...");
+        this.consolidateSharedAssets(cfg.repoPath, targetDir);
 
         showMessage(`已导出: ${slug}/index.html`, 2500, "info");
 
@@ -1251,6 +1255,21 @@ class PagesPublisher extends Plugin {
         }
     }
 
+    getSharedAssetsRoot(repoPath) {
+        return path.join(repoPath, SHARED_ASSETS_DIR);
+    }
+
+    consolidateSharedAssets(repoPath, targetDir) {
+        const sharedRoot = this.getSharedAssetsRoot(repoPath);
+        fs.mkdirSync(sharedRoot, { recursive: true });
+        for (const name of ["appearance", "stage"]) {
+            const src = path.join(targetDir, name);
+            if (!fs.existsSync(src)) continue;
+            this.copyRecursiveSmart(src, path.join(sharedRoot, name));
+            this.removeIfExists(src);
+        }
+    }
+
     ensureEmptyDir(dir) {
         if (fs.existsSync(dir)) {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -1313,8 +1332,36 @@ class PagesPublisher extends Plugin {
         fs.copyFileSync(src, dst);
     }
 
+    copyRecursiveSmart(src, dst) {
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+            fs.mkdirSync(dst, { recursive: true });
+            for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+                this.copyRecursiveSmart(path.join(src, entry.name), path.join(dst, entry.name));
+            }
+            return;
+        }
+        if (fs.existsSync(dst)) {
+            try {
+                const dstStat = fs.statSync(dst);
+                if (dstStat.isFile() && dstStat.size === stat.size) return;
+                fs.rmSync(dst, { recursive: true, force: true });
+            } catch (e) {
+                fs.rmSync(dst, { recursive: true, force: true });
+            }
+        }
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+    }
+
+    removeIfExists(targetPath) {
+        if (fs.existsSync(targetPath)) {
+            fs.rmSync(targetPath, { recursive: true, force: true });
+        }
+    }
+
     // === SiYuan 原生 HTML(SiYuan) 外壳 ===
-    async buildSiYuanNativeHTML(content, title) {
+    async buildSiYuanNativeHTML(content, title, sharedBase = ".") {
         const siyuan = globalThis.window?.siyuan || {};
         const appearance = siyuan.config?.appearance || {};
         const editor = siyuan.config?.editor || {};
@@ -1330,13 +1377,14 @@ class PagesPublisher extends Plugin {
         const skipThemeStyle = (mode === 1 && darkTheme === "midnight") || (mode === 0 && lightTheme === "daylight");
         const themeStyle = skipThemeStyle
             ? ""
-            : `<link rel="stylesheet" type="text/css" id="themeStyle" href="appearance/themes/${this.esc(themeName)}/theme.css?${this.esc(version)}"/>`;
+            : `<link rel="stylesheet" type="text/css" id="themeStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?${this.esc(version)}"/>`;
         const safeTitle = this.esc(title || "Untitled");
         const js = (v) => JSON.stringify(v ?? "");
         const iconName = appearance.icon || "material";
-        const iconScripts = (["ant", "material"].includes(iconName) ? "" : `<script src="appearance/icons/material/icon.js?v=${this.esc(version)}"></script>`)
-            + `<script src="appearance/icons/${this.esc(iconName)}/icon.js?v=${this.esc(version)}"></script>`;
+        const iconScripts = (["ant", "material"].includes(iconName) ? "" : `<script src="${this.esc(sharedBase)}/appearance/icons/material/icon.js?v=${this.esc(version)}"></script>`)
+            + `<script src="${this.esc(sharedBase)}/appearance/icons/${this.esc(iconName)}/icon.js?v=${this.esc(version)}"></script>`;
         const petalCSS = await this.getPetalCSS();
+        const protyleBase = `${this.esc(sharedBase)}/stage/protyle`;
 
         return `<!DOCTYPE html>
 <html lang="${this.esc(lang)}" data-theme-mode="${themeMode}" data-light-theme="${this.esc(lightTheme)}" data-dark-theme="${this.esc(darkTheme)}">
@@ -1347,9 +1395,9 @@ class PagesPublisher extends Plugin {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/>
     <meta name="mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    <link rel="stylesheet" type="text/css" id="baseStyle" href="stage/build/export/base.css?v=${this.esc(version)}"/>
-    <link rel="stylesheet" type="text/css" id="themeDefaultStyle" href="appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(version)}"/>
-    <script src="stage/protyle/js/protyle-html.js?v=${this.esc(version)}"></script>
+    <link rel="stylesheet" type="text/css" id="baseStyle" href="${this.esc(sharedBase)}/stage/build/export/base.css?v=${this.esc(version)}"/>
+    <link rel="stylesheet" type="text/css" id="themeDefaultStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(version)}"/>
+    <script src="${this.esc(sharedBase)}/stage/protyle/js/protyle-html.js?v=${this.esc(version)}"></script>
     ${themeStyle}
     <title>${safeTitle}</title>
     <!-- Exported by SiYuan v${this.esc(version)} -->
@@ -1407,8 +1455,8 @@ class PagesPublisher extends Plugin {
     </main>
 </div>
 ${iconScripts}
-<script src="stage/build/export/protyle-method.js?v=${this.esc(version)}"></script>
-<script src="stage/protyle/js/lute/lute.min.js?v=${this.esc(version)}"></script>  
+<script src="${this.esc(sharedBase)}/stage/build/export/protyle-method.js?v=${this.esc(version)}"></script>
+<script src="${this.esc(sharedBase)}/stage/protyle/js/lute/lute.min.js?v=${this.esc(version)}"></script>  
 <script>
 window.siyuan = {
   config: {
@@ -1429,16 +1477,16 @@ window.siyuan = {
   languages: { copy: ${js(siyuan.languages?.copy || "复制")} }
 };
 const previewElement = document.getElementById("preview");
-Protyle.highlightRender(previewElement, "stage/protyle");
-Protyle.mathRender(previewElement, "stage/protyle", false);
-Protyle.mermaidRender(previewElement, "stage/protyle");
-Protyle.flowchartRender(previewElement, "stage/protyle");
-Protyle.graphvizRender(previewElement, "stage/protyle");
-Protyle.chartRender(previewElement, "stage/protyle");
-Protyle.mindmapRender(previewElement, "stage/protyle");
-Protyle.abcRender(previewElement, "stage/protyle");
+Protyle.highlightRender(previewElement, ${js(protyleBase)});
+Protyle.mathRender(previewElement, ${js(protyleBase)}, false);
+Protyle.mermaidRender(previewElement, ${js(protyleBase)});
+Protyle.flowchartRender(previewElement, ${js(protyleBase)});
+Protyle.graphvizRender(previewElement, ${js(protyleBase)});
+Protyle.chartRender(previewElement, ${js(protyleBase)});
+Protyle.mindmapRender(previewElement, ${js(protyleBase)});
+Protyle.abcRender(previewElement, ${js(protyleBase)});
 Protyle.htmlRender(previewElement);
-Protyle.plantumlRender(previewElement, "stage/protyle");
+Protyle.plantumlRender(previewElement, ${js(protyleBase)});
 document.querySelectorAll(".protyle-action__copy").forEach((item) => {
   item.addEventListener("click", (event) => {
     navigator.clipboard.writeText(item.parentElement.nextElementSibling.textContent.trimEnd().replace(/\xA0/g, " ").replace(/\u200D\x60\x60\x60/g, "\x60\x60\x60"));
