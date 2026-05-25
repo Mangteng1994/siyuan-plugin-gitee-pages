@@ -3016,7 +3016,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         try {
             const o = { cwd: repoPath };
             await this.runCommand("git rev-parse --git-dir", o);
-            this.setProgress(88, "清理历史并补推...");
+            this.setProgress(88, "合并本地提交...");
             showMessage("清理历史并补推...", 2000, "info");
             // Squash all local commits into one
             await this.runCommand("git reset --soft origin/main", o);
@@ -3031,8 +3031,9 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             if (hasChanges) {
                 await this.runCommand('git commit -m "squash and push"', o);
             }
-            // Force push
-            await this.runCommand("git push --force-with-lease", o);
+            // Force push with timeout
+            this.setProgress(92, "推送到远程...");
+            await this.runCommand("git push --force-with-lease", { ...o, timeoutMs: 30_000 });
             showMessage("清理并补推成功", 3000, "info");
             // Update all share records for this repoPath to pushStatus=success
             const records = this.getShareRecords();
