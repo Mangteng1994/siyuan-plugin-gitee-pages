@@ -2897,6 +2897,12 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         ) {
             return "AUTH_ERROR";
         }
+        if (
+            text.includes("pathspec") &&
+            text.includes("did not match any files")
+        ) {
+            return "STAGE_PATH_NOT_FOUND";
+        }
         return "";
     }
 
@@ -2914,7 +2920,15 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         if (errorType === "AUTH_ERROR") {
             return "GitHub 身份验证失败，请检查 token、仓库权限或远程地址。";
         }
+        if (errorType === "STAGE_PATH_NOT_FOUND") {
+            return "Git 暂存失败：发布目录在本地仓库中不存在，且未被 Git 跟踪。请检查分享记录中的目录名是否与实际目录一致，或重新发布该文档后再同步。";
+        }
         return "Git 推送失败，本地提交已保留，请检查 Git 输出后重试。";
+    }
+
+    quoteGitPath(value) {
+        if (!value) return '""';
+        return '"' + String(value).replace(/"/g, '\"') + '"';
     }
 
     async stagePublishedPaths(repoPath, scopeDir, options) {
@@ -2922,10 +2936,36 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             await this.runCommand("git add -A", options);
             return;
         }
-        await this.runCommand(`git add -A -- "${scopeDir}"`, options);
+        const absScopeDir = path.join(repoPath, scopeDir);
+        if (fs.existsSync(absScopeDir)) {
+            await this.runCommand(`git add -A -- ${this.quoteGitPath(scopeDir)}`, options);
+        } else {
+            let tracked = false;
+            try {
+                const { stdout } = await this.runCommand(
+                    `git ls-files -- ${this.quoteGitPath(scopeDir)}`,
+                    options
+                );
+                if (stdout && stdout.trim()) {
+                    tracked = true;
+                }
+            } catch (e) {
+                // ls-files failed, assume not tracked
+            }
+            if (tracked) {
+                await this.runCommand(
+                    `git rm -r --ignore-unmatch -- ${this.quoteGitPath(scopeDir)}`,
+                    options
+                );
+            }
+            // If not tracked and not on disk, skip silently
+        }
         const sharedRoot = this.getSharedAssetsRoot(repoPath);
         if (options?.includeSharedAssets && fs.existsSync(sharedRoot)) {
-            await this.runCommand(`git add -A -- "${SHARED_ASSETS_DIR}"`, options);
+            await this.runCommand(
+                `git add -A -- ${this.quoteGitPath(SHARED_ASSETS_DIR)}`,
+                options
+            );
         }
     }
 
