@@ -226,8 +226,40 @@ class PagesPublisher extends Plugin {
             if (container) {
                 container.classList.add("pp-content");
             }
+            this.applySettingHelpIcons(dialog);
         } catch (err) {
             console.error("[siyuan-plugin-gitee-pages] markSettingDialog failed:", err);
+        }
+    }
+
+    applySettingHelpIcons(dialog) {
+        const helpMap = {
+            "托管平台": "选择发布到 Gitee Pages 或 GitHub Pages",
+            "本地仓库路径": "Pages 仓库在本地的克隆路径",
+            "Pages URL": "发布后的访问地址",
+            "站点标题": "HTML 页面顶部显示的站点名称",
+            "自动 Git 推送": "导出 HTML 后自动 commit 并 push 到远程仓库",
+        };
+        try {
+            const labels = Array.from(dialog.querySelectorAll(".b3-label.pp-field"));
+            labels.forEach((label) => {
+                const textWrap = label.querySelector(".b3-label__text");
+                const titleNode = textWrap?.querySelector("span:first-child");
+                if (!textWrap || !titleNode) return;
+                const titleText = String(titleNode.textContent || "").trim();
+                const helpText = helpMap[titleText];
+                if (!helpText) return;
+                if (titleNode.querySelector(".pp-help")) return;
+                const help = document.createElement("span");
+                help.className = "pp-help";
+                help.textContent = "?";
+                help.title = helpText;
+                help.setAttribute("aria-label", helpText);
+                textWrap.setAttribute("data-help-hidden", "true");
+                titleNode.appendChild(help);
+            });
+        } catch (err) {
+            console.error("[siyuan-plugin-gitee-pages] applySettingHelpIcons failed:", err);
         }
     }
 
@@ -291,12 +323,13 @@ class PagesPublisher extends Plugin {
                 font-size: 13px;
                 font-weight: 500;
                 color: var(--b3-theme-on-surface);
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
             }
             .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
-                margin-top: 2px;
-                font-size: 12px;
-                line-height: 1.4;
-                color: var(--b3-theme-on-surface-light);
+                display: none !important;
+                margin-top: 0 !important;
             }
             .config__tab-container .b3-label.pp-field .b3-label__action {
                 flex: 1 1 auto !important;
@@ -304,6 +337,28 @@ class PagesPublisher extends Plugin {
                 min-width: 0 !important;
                 max-width: none !important;
                 margin-left: 14px !important;
+            }
+            .pp-help {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                margin-left: 6px;
+                border-radius: 50%;
+                font-size: 11px;
+                line-height: 1;
+                color: var(--b3-theme-on-surface-light);
+                background: color-mix(in srgb, var(--b3-theme-surface) 80%, var(--b3-theme-background));
+                border: 1px solid var(--b3-border-color);
+                cursor: help;
+                vertical-align: middle;
+                flex: 0 0 auto;
+            }
+            .pp-help:hover {
+                color: var(--b3-theme-primary);
+                border-color: var(--b3-theme-primary);
+                background: var(--b3-theme-primary-lightest);
             }
             .config__tab-container .b3-label.pp-field .b3-switch {
                 margin-left: 0 !important;
@@ -541,9 +596,7 @@ class PagesPublisher extends Plugin {
                 flex: 0 0 auto;
             }
             .pp-share-subtitle {
-                margin-top: 4px;
-                color: var(--b3-theme-on-surface-light);
-                font-size: 12px;
+                display: none !important;
             }
             .pp-share-refresh,
             .pp-share-btn {
@@ -1247,7 +1300,7 @@ class PagesPublisher extends Plugin {
         head.className = "pp-share-head";
 
         const titleWrap = document.createElement("div");
-        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span></div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
+        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span><span class="pp-help" title="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。" aria-label="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。">?</span></div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
 
         const toolbar = document.createElement("div");
         toolbar.className = "pp-share-toolbar";
