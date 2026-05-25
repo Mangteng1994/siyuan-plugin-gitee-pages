@@ -66,6 +66,8 @@ class PagesPublisher extends Plugin {
         const platform = record.platform === "github" ? "github" : "gitee";
         const createdAt = record.createdAt || record.updatedAt || new Date().toISOString();
         const updatedAt = record.updatedAt || createdAt;
+        const pushStatus = ["pending", "success", "failed"].includes(record.pushStatus) ? record.pushStatus : "success";
+        const lastPushErrorType = ["REMOTE_AHEAD", "NETWORK_ERROR", "AUTH_ERROR"].includes(record.lastPushErrorType) ? record.lastPushErrorType : "";
         return {
             id: String(record.id || `${platform}-${record.docId || "doc"}-${record.slug || "share"}`),
             docId: String(record.docId || ""),
@@ -77,6 +79,9 @@ class PagesPublisher extends Plugin {
             createdAt,
             updatedAt,
             autoCommit: record.autoCommit !== false,
+            publishStatus: "local_saved",
+            pushStatus,
+            lastPushErrorType,
             access: record.access && typeof record.access === "object" ? record.access : undefined,
         };
     }
@@ -92,20 +97,36 @@ class PagesPublisher extends Plugin {
         return this.normalizeConfig(cfg || this.defaultConfig());
     }
 
+    async persistConfigAndWait(cfg) {
+        const normalized = this.normalizeConfig(cfg);
+        this.data[STORAGE_KEY] = normalized;
+        try {
+            if (typeof this.saveData === "function") {
+                await this.saveData(STORAGE_FILE, normalized);
+            }
+        } catch (e) {
+            console.error("[Pages Publisher] persistConfigAndWait failed:", e);
+        }
+        return normalized;
+    }
+
     persistConfig(cfg) {
         const normalized = this.normalizeConfig(cfg);
         this.data[STORAGE_KEY] = normalized;
         try {
             if (typeof this.saveData === "function") {
-                this.saveData(STORAGE_FILE, normalized);
+                Promise.resolve(this.saveData(STORAGE_FILE, normalized)).catch((e) => {
+                    console.error("[Pages Publisher] persistConfig failed:", e);
+                });
             }
         } catch (e) { /* ignore */ }
+        return normalized;
     }
 
     async onload() {
         // 显式加载并持久化默认配置，避免重启后丢失
         this.data[STORAGE_KEY] = await this.loadConfig();
-        this.persistConfig(this.data[STORAGE_KEY]);
+        await this.persistConfigAndWait(this.data[STORAGE_KEY]);
 
         // 图标
         this.addIcons(`<symbol id="iconPagesPub" viewBox="0 0 24 24">
@@ -231,72 +252,23 @@ class PagesPublisher extends Plugin {
         }
     }
 
-    decorateSettingHelpIcons() {
-        const dialogs = Array.from(document.querySelectorAll(".b3-dialog__container"));
-        const dialog = dialogs.reverse().find((item) => {
-            const text = item.querySelector(".b3-dialog__header")?.textContent || "";
-            return text.includes("Pages 发布");
-        }) || dialogs[dialogs.length - 1];
-        if (!dialog) return;
-        const helpDefs = [
-            {
-                selector: ".pp-help-platform",
-                title: "托管平台",
-                help: "选择发布到 Gitee Pages 或 GitHub Pages",
-            },
-            {
-                selector: ".pp-help-repo",
-                title: "本地仓库路径",
-                help: "Pages 仓库在本地的克隆路径",
-            },
-            {
-                selector: ".pp-help-url",
-                title: "Pages URL",
-                help: "发布后的访问地址",
-            },
-            {
-                selector: ".pp-help-title",
-                title: "站点标题",
-                help: "HTML 页面顶部显示的站点名称",
-            },
-            {
-                selector: ".pp-help-auto",
-                title: "自动 Git 推送",
-                help: "导出 HTML 后自动 commit 并 push 到远程仓库",
-            },
-        ];
-        try {
-            helpDefs.forEach((def) => {
-                const label = dialog.querySelector(def.selector);
-                if (!label) {
-                    console.warn("[siyuan-plugin-gitee-pages] help target not found:", def.selector);
-                    return;
-                }
-                const textWrap = label.querySelector(".b3-label__text");
-                if (!textWrap) {
-                    console.warn("[siyuan-plugin-gitee-pages] help textWrap not found:", def.selector);
-                    return;
-                }
-                const existing = textWrap.querySelector(".pp-label-title-row");
-                if (existing) existing.remove();
-                textWrap.querySelectorAll(".pp-help").forEach((node) => node.remove());
-                const row = document.createElement("span");
-                row.className = "pp-label-title-row";
-                const title = document.createElement("span");
-                title.className = "pp-label-title";
-                title.textContent = def.title;
-                const help = document.createElement("span");
-                help.className = "pp-help";
-                help.textContent = "?";
-                help.title = def.help;
-                help.setAttribute("aria-label", def.help);
-                row.appendChild(title);
-                row.appendChild(help);
-                textWrap.prepend(row);
-            });
-        } catch (err) {
-            console.error("[siyuan-plugin-gitee-pages] decorateSettingHelpIcons failed:", err);
+    createCustomSettingField({ title = "", actionElement, fieldClassName = "", actionClassName = "", labelClassName = "" }) {
+        const wrap = document.createElement("div");
+        wrap.className = `pp-custom-field pp-setting-row${fieldClassName ? ` ${fieldClassName}` : ""}`;
+
+        const label = document.createElement("div");
+        label.className = `pp-custom-label pp-setting-label${labelClassName ? ` ${labelClassName}` : ""}`;
+        label.textContent = title;
+
+        const action = document.createElement("div");
+        action.className = `pp-custom-action pp-setting-control pp-control-width${actionClassName ? ` ${actionClassName}` : ""}`;
+        if (actionElement) {
+            action.appendChild(actionElement);
         }
+
+        wrap.appendChild(label);
+        wrap.appendChild(action);
+        return wrap;
     }
 
     injectSettingStyle() {
@@ -309,7 +281,7 @@ class PagesPublisher extends Plugin {
         }
         style.textContent = `
             .pp-setting-dialog {
-                width: min(720px, 92vw) !important;
+                width: min(1040px, 96vw) !important;
                 height: min(82vh, 820px) !important;
                 max-height: 82vh !important;
                 min-height: 620px !important;
@@ -330,12 +302,15 @@ class PagesPublisher extends Plugin {
                 min-height: 0 !important;
                 overflow-y: auto !important;
                 overflow-x: hidden !important;
-                padding: 18px 24px !important;
+                padding: 18px 28px 18px 24px !important;
             }
             .pp-setting-dialog .pp-content,
             .pp-setting-dialog .b3-dialog__content > .config__tab-container {
-                width: 100% !important;
-                max-width: 640px !important;
+                --pp-label-width: 360px;
+                --pp-control-width: 560px;
+                --pp-col-gap: 24px;
+                width: min(100%, calc(var(--pp-label-width) + var(--pp-control-width) + var(--pp-col-gap))) !important;
+                max-width: calc(var(--pp-label-width) + var(--pp-control-width) + var(--pp-col-gap)) !important;
                 margin-left: auto !important;
                 margin-right: auto !important;
                 padding-bottom: 10px !important;
@@ -347,22 +322,6 @@ class PagesPublisher extends Plugin {
                 align-items: center !important;
                 margin: 0 !important;
             }
-            .config__tab-container .b3-label.pp-field .b3-label__text {
-                flex: 0 0 240px !important;
-                min-width: 200px !important;
-                margin: 0 !important;
-            }
-            .config__tab-container .b3-label.pp-field .b3-label__text > span {
-                display: block;
-            }
-            .config__tab-container .b3-label.pp-field .b3-label__text > span:first-child {
-                font-size: 13px;
-                font-weight: 500;
-                color: var(--b3-theme-on-surface);
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-            }
             .pp-label-title-row {
                 display: inline-flex;
                 align-items: center;
@@ -373,41 +332,52 @@ class PagesPublisher extends Plugin {
                 display: inline-flex;
                 align-items: center;
             }
-            .config__tab-container .b3-label.pp-field .b3-label__text > :not(:first-child) {
+            .config__tab-container .b3-label.pp-custom-host .b3-label__text {
                 display: none !important;
             }
-            .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
-                display: none !important;
-                margin-top: 0 !important;
-            }
-            .config__tab-container .b3-label.pp-field .b3-label__action {
+            .config__tab-container .b3-label.pp-custom-host .b3-label__action {
                 flex: 1 1 auto !important;
-                width: auto !important;
+                width: 100% !important;
                 min-width: 0 !important;
                 max-width: none !important;
-                margin-left: 14px !important;
+                margin-left: 0 !important;
+                display: flex !important;
+                justify-content: center !important;
             }
-            .pp-help {
-                display: inline-flex;
+            .pp-custom-field {
+                width: 100%;
+                display: grid;
+                grid-template-columns: var(--pp-label-width) var(--pp-control-width);
                 align-items: center;
-                justify-content: center;
-                width: 16px;
-                height: 16px;
-                margin-left: 6px;
-                border-radius: 50%;
-                font-size: 11px;
-                line-height: 1;
-                color: var(--b3-theme-on-surface-light);
-                background: color-mix(in srgb, var(--b3-theme-surface) 80%, var(--b3-theme-background));
-                border: 1px solid var(--b3-border-color);
-                cursor: help;
-                vertical-align: middle;
-                flex: 0 0 auto;
+                column-gap: var(--pp-col-gap);
             }
-            .pp-help:hover {
-                color: var(--b3-theme-primary);
-                border-color: var(--b3-theme-primary);
-                background: var(--b3-theme-primary-lightest);
+            .pp-custom-label {
+                width: var(--pp-label-width);
+                min-width: 0;
+                margin: 0;
+                font-size: 13px;
+                font-weight: 500;
+                color: var(--b3-theme-on-surface);
+                line-height: 1.4;
+            }
+            .pp-custom-action {
+                width: var(--pp-control-width);
+                min-width: 0 !important;
+                display: flex;
+                align-items: center;
+            }
+            .pp-setting-control {
+                justify-content: flex-start;
+            }
+            .pp-setting-control > * {
+                width: 100%;
+                min-width: 0;
+            }
+            .pp-setting-control--end {
+                justify-content: flex-end;
+            }
+            .pp-setting-control--end > * {
+                width: auto;
             }
             .config__tab-container .b3-label.pp-field .b3-switch {
                 margin-left: 0 !important;
@@ -451,17 +421,11 @@ class PagesPublisher extends Plugin {
                 padding-bottom: 12px !important;
                 margin: 0 0 12px !important;
             }
-            .config__tab-container .b3-label.pp-switch-row {
-                align-items: center !important;
-            }
-            .config__tab-container .b3-label.pp-switch-row .b3-label__action {
-                display: flex !important;
-                justify-content: flex-end !important;
-            }
             .pp-platform-cards {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 10px;
+                width: 100%;
             }
             .pp-platform-card {
                 min-width: 0;
@@ -541,15 +505,6 @@ class PagesPublisher extends Plugin {
                 transition: all .25s;
                 text-align: center;
             }
-            .pp-setting-dialog .pp-publish-row {
-                display: flex !important;
-                justify-content: center !important;
-                align-items: center !important;
-                padding: 8px 0 10px !important;
-                margin: 0 0 10px !important;
-                border-bottom: 0 !important;
-            }
-            .pp-setting-dialog .pp-publish-row .pp-publish-button,
             .pp-setting-dialog .pp-publish-button {
                 width: 168px !important;
                 min-width: 168px !important;
@@ -594,11 +549,9 @@ class PagesPublisher extends Plugin {
                 border-radius: 12px;
                 background: var(--b3-theme-surface);
                 width: 100%;
-                max-width: 640px !important;
-                margin-left: auto !important;
-                margin-right: auto !important;
+                max-width: 100% !important;
                 box-sizing: border-box !important;
-                padding: 14px 16px;
+                padding: 14px 18px 16px 16px;
             }
             .pp-share-head {
                 width: 100%;
@@ -751,6 +704,18 @@ class PagesPublisher extends Plugin {
                 background: var(--b3-theme-primary-lightest);
                 color: var(--b3-theme-primary);
             }
+            .pp-share-chip--success {
+                background: color-mix(in srgb, #2ea043 16%, var(--b3-theme-surface));
+                color: #2ea043;
+            }
+            .pp-share-chip--warn {
+                background: color-mix(in srgb, #b7791f 16%, var(--b3-theme-surface));
+                color: #b7791f;
+            }
+            .pp-share-chip--error {
+                background: color-mix(in srgb, #d23f31 14%, var(--b3-theme-surface));
+                color: #d23f31;
+            }
             .pp-share-grid {
                 display: grid;
                 grid-template-columns: minmax(88px, 104px) 1fr;
@@ -795,18 +760,31 @@ class PagesPublisher extends Plugin {
                 border-color: var(--b3-theme-error, #d23f31);
                 color: var(--b3-theme-error, #d23f31);
             }
-            @media (max-width: 840px) {
+            @media (max-width: 1020px) {
                 .config__tab-container .b3-label.pp-field {
                     align-items: flex-start !important;
                 }
-                .config__tab-container .b3-label.pp-field .b3-label__text {
-                    flex: none !important;
-                    min-width: 0 !important;
-                    margin-bottom: 8px !important;
-                }
-                .config__tab-container .b3-label.pp-field .b3-label__action {
+                .pp-setting-dialog .pp-content,
+                .pp-setting-dialog .b3-dialog__content > .config__tab-container {
                     width: 100% !important;
-                    margin-left: 0 !important;
+                    max-width: 100% !important;
+                }
+                .pp-custom-field {
+                    grid-template-columns: 1fr;
+                    align-items: stretch;
+                    row-gap: 8px;
+                }
+                .pp-custom-label {
+                    width: 100%;
+                }
+                .pp-custom-action {
+                    width: 100% !important;
+                }
+                .pp-setting-control--end {
+                    justify-content: flex-start;
+                }
+                .pp-setting-control--end > * {
+                    width: 100%;
                 }
                 .pp-platform-cards {
                     grid-template-columns: 1fr 1fr;
@@ -840,7 +818,7 @@ class PagesPublisher extends Plugin {
                     min-height: 0 !important;
                 }
                 .pp-setting-dialog .b3-dialog__content {
-                    padding: 14px !important;
+                    padding: 14px 16px !important;
                 }
                 .pp-platform-cards {
                     grid-template-columns: 1fr;
@@ -849,7 +827,6 @@ class PagesPublisher extends Plugin {
                     flex-direction: column;
                     align-items: stretch;
                 }
-                .pp-setting-dialog .pp-publish-row .pp-publish-button,
                 .pp-setting-dialog .pp-publish-button {
                     width: 168px !important;
                     min-width: 168px !important;
@@ -1144,7 +1121,7 @@ class PagesPublisher extends Plugin {
             .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
     }
 
-    upsertShareRecord(record) {
+    async upsertShareRecord(record) {
         const normalized = this.normalizeShareRecord(record);
         if (!normalized) return null;
         const data = this.data[STORAGE_KEY] || this.defaultConfig();
@@ -1168,16 +1145,24 @@ class PagesPublisher extends Plugin {
             });
         }
         data.shares = shares;
-        this.persistConfig(data);
-        return shares[existingIndex >= 0 ? existingIndex : shares.length - 1];
+        const persisted = await this.persistConfigAndWait(data);
+        const persistedShares = Array.isArray(persisted.shares) ? persisted.shares : [];
+        const saved = this.normalizeShareRecord(persistedShares[existingIndex >= 0 ? existingIndex : persistedShares.length - 1]);
+        console.debug("[Pages Publisher] share record persisted:", {
+            id: normalized.id,
+            docId: normalized.docId,
+            platform: normalized.platform,
+            totalShares: persistedShares.length,
+        });
+        return saved;
     }
 
-    removeShareRecord(id) {
+    async removeShareRecord(id) {
         const data = this.data[STORAGE_KEY] || this.defaultConfig();
         const shares = Array.isArray(data.shares) ? data.shares.slice() : [];
         const nextShares = shares.filter((item) => item?.id !== id);
         data.shares = nextShares;
-        this.persistConfig(data);
+        await this.persistConfigAndWait(data);
     }
 
     // 显示设置+发布面板
@@ -1195,20 +1180,19 @@ class PagesPublisher extends Plugin {
 
         // ── 平台选择 ──
         this.setting.addItem({
-            title: "托管平台",
+            title: "",
             description: "",
-            direction: "row",
-            className: "pp-field pp-section-card pp-section-platform pp-help-platform",
+            className: "pp-field pp-custom-host pp-section-card pp-section-platform",
             createActionElement: () => {
-                const wrap = document.createElement("div");
-                wrap.className = "pp-platform-cards";
+                const cards = document.createElement("div");
+                cards.className = "pp-platform-cards";
                 const card = (val, name, isActive) => {
                     const el = document.createElement("div");
                     el.className = "pp-platform-card" + (isActive ? " active" : "");
                     el.innerHTML = `<span class="pp-dot"></span><span class="pp-name">${name}</span>`;
                     el.addEventListener("click", () => {
                         data.platform = val; that.persistConfig(data);
-                        wrap.querySelectorAll(".pp-platform-card").forEach(c => c.classList.remove("active"));
+                        cards.querySelectorAll(".pp-platform-card").forEach(c => c.classList.remove("active"));
                         el.classList.add("active");
                         const pc = data[val] || {};
                         if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; }
@@ -1217,18 +1201,20 @@ class PagesPublisher extends Plugin {
                     });
                     return el;
                 };
-                wrap.appendChild(card("gitee", "Gitee Pages", plat === "gitee"));
-                wrap.appendChild(card("github", "GitHub Pages", plat === "github"));
-                return wrap;
+                cards.appendChild(card("gitee", "Gitee Pages", plat === "gitee"));
+                cards.appendChild(card("github", "GitHub Pages", plat === "github"));
+                return this.createCustomSettingField({
+                    title: "托管平台",
+                    actionElement: cards,
+                });
             },
         });
 
         // ── 仓库路径 ──
         this.setting.addItem({
-            title: "本地仓库路径",
+            title: "",
             description: "",
-            direction: "row",
-            className: "pp-field pp-config-item pp-config-start pp-help-repo",
+            className: "pp-field pp-custom-host pp-config-item pp-config-start",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1238,16 +1224,18 @@ class PagesPublisher extends Plugin {
                 el.spellcheck = false;
                 el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); });
                 refs.repo = el;
-                return el;
+                return this.createCustomSettingField({
+                    title: "本地仓库路径",
+                    actionElement: el,
+                });
             },
         });
 
         // ── Pages URL ──
         this.setting.addItem({
-            title: "Pages URL",
+            title: "",
             description: "",
-            direction: "row",
-            className: "pp-field pp-config-item pp-config-mid pp-help-url",
+            className: "pp-field pp-custom-host pp-config-item pp-config-mid",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1257,16 +1245,18 @@ class PagesPublisher extends Plugin {
                 el.spellcheck = false;
                 el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); });
                 refs.url = el;
-                return el;
+                return this.createCustomSettingField({
+                    title: "Pages URL",
+                    actionElement: el,
+                });
             },
         });
 
         // ── 站点标题 ──
         this.setting.addItem({
-            title: "站点标题",
+            title: "",
             description: "",
-            direction: "row",
-            className: "pp-field pp-config-item pp-config-mid pp-help-title",
+            className: "pp-field pp-custom-host pp-config-item pp-config-mid",
             createActionElement: () => {
                 const el = document.createElement("input");
                 el.className = "pp-input";
@@ -1276,22 +1266,29 @@ class PagesPublisher extends Plugin {
                 el.spellcheck = false;
                 el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.siteTitle=el.value; that.persistConfig(data); });
                 refs.title = el;
-                return el;
+                return this.createCustomSettingField({
+                    title: "站点标题",
+                    actionElement: el,
+                });
             },
         });
 
         // ── 自动推送 ──
         this.setting.addItem({
-            title: "自动 Git 推送",
+            title: "",
             description: "",
-            className: "pp-field pp-config-item pp-config-end pp-switch-row pp-help-auto",
+            className: "pp-field pp-custom-host pp-config-item pp-config-end pp-switch-row",
             createActionElement: () => {
                 const inp = document.createElement("input");
                 inp.type = "checkbox";
                 inp.className = "b3-switch fn__flex-center";
                 inp.checked = data.autoCommit !== false;
                 inp.addEventListener("change", () => { data.autoCommit=inp.checked; that.persistConfig(data); });
-                return inp;
+                return this.createCustomSettingField({
+                    title: "自动 Git 推送",
+                    actionElement: inp,
+                    actionClassName: "pp-setting-control--end",
+                });
             },
         });
 
@@ -1313,10 +1310,13 @@ class PagesPublisher extends Plugin {
                     await that.refreshLastActiveDocInfo("panel-publish-click").catch(() => {});
                     that.runPublishInBackground();
                 });
-                const wrap = document.createElement("div");
-                wrap.className = "pp-publish-row";
-                wrap.appendChild(btn);
-                return wrap;
+                return this.createCustomSettingField({
+                    title: "",
+                    actionElement: btn,
+                    labelClassName: "pp-setting-label--empty",
+                    actionClassName: "pp-setting-control--end",
+                    fieldClassName: "pp-setting-row--publish",
+                });
             },
         });
 
@@ -1335,15 +1335,10 @@ class PagesPublisher extends Plugin {
         this.setting.open(this.displayName || "Pages 发布");
         requestAnimationFrame(() => {
             this.markSettingDialog();
-            this.decorateSettingHelpIcons();
         });
         setTimeout(() => {
             this.markSettingDialog();
-            this.decorateSettingHelpIcons();
         }, 80);
-        setTimeout(() => {
-            this.decorateSettingHelpIcons();
-        }, 200);
     }
 
     buildShareListElement() {
@@ -1355,7 +1350,7 @@ class PagesPublisher extends Plugin {
         head.className = "pp-share-head";
 
         const titleWrap = document.createElement("div");
-        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span><span class="pp-help" title="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。" aria-label="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。">?</span></div>`;
+        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span></div>`;
 
         const toolbar = document.createElement("div");
         toolbar.className = "pp-share-toolbar";
@@ -1418,12 +1413,36 @@ class PagesPublisher extends Plugin {
         body.appendChild(list);
     }
 
+    getSharePushStatusMeta(record) {
+        const status = record?.pushStatus || "success";
+        if (status === "failed") {
+            return {
+                label: record?.lastPushErrorType === "REMOTE_AHEAD" ? "远程领先" : "推送失败",
+                className: "pp-share-chip--error",
+                detail: record?.lastPushErrorType || "failed",
+            };
+        }
+        if (status === "pending") {
+            return {
+                label: "待推送",
+                className: "pp-share-chip--warn",
+                detail: "pending",
+            };
+        }
+        return {
+            label: "已推送",
+            className: "pp-share-chip--success",
+            detail: "success",
+        };
+    }
+
     createShareCard(record, container) {
         const card = document.createElement("div");
         card.className = "pp-share-card";
 
         const safeUpdated = this.formatDateTime(record.updatedAt);
         const safeUrl = String(record.url || "").trim();
+        const pushMeta = this.getSharePushStatusMeta(record);
         const linkHtml = safeUrl
             ? `<a class="pp-share-url-link" href="${this.escAttr(safeUrl)}" title="${this.escAttr(safeUrl)}" target="_blank" rel="noopener noreferrer">${this.esc(safeUrl)}</a>`
             : `<span class="pp-share-grid-value">-</span>`;
@@ -1433,6 +1452,7 @@ class PagesPublisher extends Plugin {
                     <div class="pp-share-card-title">${this.esc(record.title)}</div>
                     <div class="pp-share-card-meta">
                         <span class="pp-share-chip">${record.platform}</span>
+                        <span class="pp-share-chip ${this.escAttr(pushMeta.className)}" title="${this.escAttr(pushMeta.detail)}">${this.esc(pushMeta.label)}</span>
                     </div>
                 </div>
                 <div class="pp-share-card-time">更新时间 ${this.esc(safeUpdated)}</div>
@@ -1640,6 +1660,7 @@ class PagesPublisher extends Plugin {
         let slug = forceSlug || this.fname(baseTitle);
         let targetDir = path.join(cfg.repoPath, slug);
         const exportStartedAt = Date.now();
+        const buildToken = String(exportStartedAt);
 
         this.setProgress(12, "导出 SiYuan HTML(SiYuan) 正文...");
         showMessage("导出 SiYuan HTML(SiYuan) 中...", 1800, "info");
@@ -1695,7 +1716,11 @@ class PagesPublisher extends Plugin {
             if (typeof r.data.content === "string" && r.data.content.trim()) {
                 fs.writeFileSync(
                     path.join(targetDir, "index.html"),
-                    await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle, `../${SHARED_ASSETS_DIR}`),
+                    await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle, {
+                        sharedBase: `../${SHARED_ASSETS_DIR}`,
+                        buildToken,
+                        targetDir,
+                    }),
                     "utf-8",
                 );
             }
@@ -1717,18 +1742,25 @@ class PagesPublisher extends Plugin {
         }
 
         this.setProgress(74, "归并公共资源...");
-        this.consolidateSharedAssets(cfg.repoPath, targetDir);
+        const sharedAssetsChanged = this.consolidateSharedAssets(cfg.repoPath, targetDir);
+
+        this.setProgress(76, "校验发布资源...");
+        const validation = this.validatePublishedHtml(targetDir);
+        if (!validation.ok) {
+            const parts = [];
+            if (validation.invalidPaths.length) parts.push(`本地绝对路径: ${validation.invalidPaths.slice(0, 6).join(", ")}`);
+            if (validation.missingAssets.length) parts.push(`缺失资源: ${validation.missingAssets.slice(0, 6).join(", ")}`);
+            const message = `发布失败：资源校验未通过。${parts.join("；")}`;
+            this.finishProgress(message, true);
+            showMessage(message, 8000, "error");
+            return null;
+        }
 
         showMessage(`已导出: ${slug}/index.html`, 2500, "info");
 
-        if (cfg.autoCommit) {
-            this.setProgress(78, "Git 提交并推送...");
-            await this.gitPush(cfg.repoPath, exportedName || baseTitle, slug);
-        }
-
         const url = this.buildShareUrl(cfg.pagesUrl, slug);
         const now = new Date().toISOString();
-        const record = this.upsertShareRecord({
+        let record = await this.upsertShareRecord({
             id: `${cfg.platform}-${docId}-${slug}`,
             docId,
             title: exportedName || baseTitle,
@@ -1739,6 +1771,9 @@ class PagesPublisher extends Plugin {
             createdAt: now,
             updatedAt: now,
             autoCommit: cfg.autoCommit,
+            publishStatus: "local_saved",
+            pushStatus: cfg.autoCommit ? "pending" : "pending",
+            lastPushErrorType: "",
         });
 
         if (source === "current") {
@@ -1750,8 +1785,40 @@ class PagesPublisher extends Plugin {
         }
 
         if (cfg.autoCommit) {
-            this.finishProgress(`发布成功: ${url}`);
-            showMessage(`发布成功! ${url}`, 6000, "info");
+            this.setProgress(78, "Git 提交并推送...");
+            try {
+                await this.gitPush(cfg.repoPath, exportedName || baseTitle, slug, undefined, {
+                    includeSharedAssets: sharedAssetsChanged,
+                });
+                record = await this.upsertShareRecord({
+                    ...record,
+                    updatedAt: new Date().toISOString(),
+                    publishStatus: "local_saved",
+                    pushStatus: "success",
+                    lastPushErrorType: "",
+                });
+                this.finishProgress(`发布成功: ${url}`);
+                showMessage(`发布成功! ${url}`, 6000, "info");
+            } catch (err) {
+                const errorType = err?.gitPushErrorType || "";
+                record = await this.upsertShareRecord({
+                    ...record,
+                    updatedAt: new Date().toISOString(),
+                    publishStatus: "local_saved",
+                    pushStatus: "failed",
+                    lastPushErrorType: errorType,
+                });
+                this.finishProgress(`本地已保存，远程推送失败: ${slug}/index.html`, true);
+                return {
+                    record,
+                    cfg,
+                    slug,
+                    targetDir,
+                    url,
+                    pushFailed: true,
+                    pushErrorType: errorType,
+                };
+            }
         } else {
             this.finishProgress(`导出完成: ${slug}/index.html`);
             showMessage(`导出完成: ${slug}/index.html`, 4000, "info");
@@ -1773,7 +1840,7 @@ class PagesPublisher extends Plugin {
                 forceSlug: record.slug,
                 platform: record.platform,
             });
-            if (result?.record) {
+            if (result?.record && !result?.pushFailed) {
                 showMessage(`分享已更新: ${result.record.url}`, 4000, "info");
             }
         } catch (err) {
@@ -1805,7 +1872,7 @@ class PagesPublisher extends Plugin {
                     showMessage(`本地目录已删除但远端同步失败: ${msg}`, 7000, "error");
                     return;
                 }
-                this.removeShareRecord(record.id);
+                await this.removeShareRecord(record.id);
                 this.finishProgress(`删除成功: ${scopeDir}`);
                 showMessage("分享已删除并同步到远程仓库", 4000, "info");
             });
@@ -1991,12 +2058,14 @@ class PagesPublisher extends Plugin {
     consolidateSharedAssets(repoPath, targetDir) {
         const sharedRoot = this.getSharedAssetsRoot(repoPath);
         fs.mkdirSync(sharedRoot, { recursive: true });
+        let changed = false;
         for (const name of ["appearance", "stage"]) {
             const src = path.join(targetDir, name);
             if (!fs.existsSync(src)) continue;
-            this.copyRecursiveSmart(src, path.join(sharedRoot, name));
+            changed = this.copyRecursiveSmart(src, path.join(sharedRoot, name)) || changed;
             this.removeIfExists(src);
         }
+        return changed;
     }
 
     ensureEmptyDir(dir) {
@@ -2065,15 +2134,16 @@ class PagesPublisher extends Plugin {
         const stat = fs.statSync(src);
         if (stat.isDirectory()) {
             fs.mkdirSync(dst, { recursive: true });
+            let changed = false;
             for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-                this.copyRecursiveSmart(path.join(src, entry.name), path.join(dst, entry.name));
+                changed = this.copyRecursiveSmart(path.join(src, entry.name), path.join(dst, entry.name)) || changed;
             }
-            return;
+            return changed;
         }
         if (fs.existsSync(dst)) {
             try {
                 const dstStat = fs.statSync(dst);
-                if (dstStat.isFile() && dstStat.size === stat.size) return;
+                if (dstStat.isFile() && dstStat.size === stat.size) return false;
                 fs.rmSync(dst, { recursive: true, force: true });
             } catch (e) {
                 fs.rmSync(dst, { recursive: true, force: true });
@@ -2081,6 +2151,7 @@ class PagesPublisher extends Plugin {
         }
         fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(src, dst);
+        return true;
     }
 
     removeIfExists(targetPath) {
@@ -2089,8 +2160,233 @@ class PagesPublisher extends Plugin {
         }
     }
 
+    hashString(input) {
+        const text = String(input || "");
+        let hash = 0;
+        for (let i = 0; i < text.length; i += 1) {
+            hash = ((hash << 5) - hash) + text.charCodeAt(i);
+            hash |= 0;
+        }
+        return Math.abs(hash).toString(16);
+    }
+
+    splitResourceRef(ref) {
+        const value = String(ref || "").trim();
+        const match = value.match(/^([^?#]*)([?#].*)?$/);
+        return {
+            path: match?.[1] || value,
+            suffix: match?.[2] || "",
+        };
+    }
+
+    isExternalResourceRef(ref) {
+        return /^(?:https?:|data:|mailto:|tel:|javascript:)/i.test(String(ref || "").trim());
+    }
+
+    isLocalAbsoluteResource(ref) {
+        return /^(?:file:\/\/\/|[A-Za-z]:[\\/]|\/[A-Za-z]:\/)/.test(String(ref || "").trim());
+    }
+
+    extractLocalFilePath(ref) {
+        const value = String(ref || "").trim();
+        if (!value) return "";
+        if (/^file:\/\/\//i.test(value)) {
+            try {
+                let pathname = decodeURIComponent(new URL(value).pathname || "");
+                if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1);
+                return pathname.replace(/\//g, path.sep);
+            } catch (e) {
+                return "";
+            }
+        }
+        if (/^[A-Za-z]:[\\/]/.test(value)) {
+            return value.replace(/\//g, path.sep);
+        }
+        if (/^\/[A-Za-z]:\//.test(value)) {
+            return value.slice(1).replace(/\//g, path.sep);
+        }
+        return "";
+    }
+
+    copyPublishedDependencyFile(sourcePath, targetDir, copiedMap) {
+        const cacheKey = path.resolve(sourcePath);
+        if (copiedMap.has(cacheKey)) return copiedMap.get(cacheKey);
+        const ext = path.extname(sourcePath);
+        const base = path.basename(sourcePath, ext);
+        const fileName = `${this.fname(base)}-${this.hashString(cacheKey).slice(0, 8)}${ext}`;
+        const relativePath = `./assets/published/${fileName}`;
+        const outputPath = path.join(targetDir, "assets", "published", fileName);
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        fs.copyFileSync(sourcePath, outputPath);
+        copiedMap.set(cacheKey, relativePath);
+        return relativePath;
+    }
+
+    rewritePublishedResourcePath(ref, { targetDir, sharedBase, copiedMap }) {
+        const { path: rawPath, suffix } = this.splitResourceRef(ref);
+        const trimmed = String(rawPath || "").trim();
+        if (!trimmed || trimmed.startsWith("#") || this.isExternalResourceRef(trimmed)) {
+            return { ok: true, value: trimmed + suffix };
+        }
+
+        if (this.isLocalAbsoluteResource(trimmed)) {
+            const localPath = this.extractLocalFilePath(trimmed);
+            if (!localPath || !fs.existsSync(localPath) || !fs.statSync(localPath).isFile()) {
+                return { ok: false, value: trimmed + suffix, issue: `缺失本地资源: ${trimmed}` };
+            }
+            const copied = this.copyPublishedDependencyFile(localPath, targetDir, copiedMap);
+            return { ok: true, value: copied + suffix };
+        }
+
+        let nextPath = trimmed.replace(/\\/g, "/");
+        if (nextPath.startsWith(`/${SHARED_ASSETS_DIR}/`)) {
+            nextPath = `../${nextPath.replace(/^\/+/, "")}`;
+        } else if (nextPath === SHARED_ASSETS_DIR || nextPath.startsWith(`${SHARED_ASSETS_DIR}/`)) {
+            nextPath = `../${nextPath.replace(/^\/+/, "")}`;
+        } else if (nextPath.startsWith("/appearance/") || nextPath.startsWith("appearance/")) {
+            nextPath = `${sharedBase.replace(/\/+$/, "")}/${nextPath.replace(/^\/+/, "")}`;
+        } else if (nextPath.startsWith("/stage/") || nextPath.startsWith("stage/")) {
+            nextPath = `${sharedBase.replace(/\/+$/, "")}/${nextPath.replace(/^\/+/, "")}`;
+        } else if (nextPath.startsWith("/assets/")) {
+            nextPath = `.${nextPath}`;
+        } else if (nextPath === "assets" || nextPath.startsWith("assets/")) {
+            nextPath = nextPath.startsWith("./") ? nextPath : `./${nextPath}`;
+        } else if (nextPath.startsWith("/")) {
+            nextPath = `.${nextPath}`;
+        }
+
+        return { ok: true, value: nextPath + suffix };
+    }
+
+    buildStaticTocData(root) {
+        const selector = [
+            "h1", "h2", "h3",
+            "[data-type='NodeHeading']",
+            "[data-type~='NodeHeading']",
+            "[data-subtype='h1']",
+            "[data-subtype='h2']",
+            "[data-subtype='h3']",
+            ".h1", ".h2", ".h3",
+        ].join(",");
+        const seen = new Set();
+        return Array.from(root.querySelectorAll(selector)).map((node) => {
+            if (seen.has(node)) return null;
+            seen.add(node);
+            const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
+            if (!text) return null;
+            let level = 2;
+            const tag = node.tagName ? node.tagName.toLowerCase() : "";
+            const tagMatch = tag.match(/^h([1-3])$/);
+            if (tagMatch) {
+                level = Number(tagMatch[1]);
+            } else {
+                const subtype = node.getAttribute("data-subtype") || "";
+                const subtypeMatch = subtype.match(/^h([1-3])$/i);
+                if (subtypeMatch) {
+                    level = Number(subtypeMatch[1]);
+                } else if (node.classList) {
+                    for (let i = 1; i <= 3; i += 1) {
+                        if (node.classList.contains(`h${i}`)) {
+                            level = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            const currentId = (node.getAttribute("id") || node.getAttribute("data-node-id") || "").trim();
+            const id = currentId || `${this.fname(text)}-${this.hashString(text).slice(0, 6)}`;
+            node.setAttribute("id", id);
+            return { id, text, level };
+        }).filter(Boolean);
+    }
+
+    generateStaticTocHtml(items) {
+        if (!items.length) {
+            return '<div class="pages-pub-toc-empty">暂无目录</div>';
+        }
+        return items.map((item) => (
+            `<a class="pages-pub-toc-link toc-level-${Math.min(Math.max(item.level, 1), 4)}" href="#${this.escAttr(encodeURIComponent(item.id))}" data-target-id="${this.escAttr(item.id)}">${this.esc(item.text)}</a>`
+        )).join("");
+    }
+
+    preparePublishedContent(content, { targetDir, sharedBase }) {
+        const DOMParserCtor = globalThis.window?.DOMParser || globalThis.DOMParser;
+        if (!DOMParserCtor) {
+            return {
+                contentHtml: content,
+                tocHtml: '<div class="pages-pub-toc-empty">暂无目录</div>',
+                hasToc: false,
+            };
+        }
+        const parser = new DOMParserCtor();
+        const doc = parser.parseFromString(`<div id="pages-pub-root">${content}</div>`, "text/html");
+        const root = doc.getElementById("pages-pub-root");
+        if (!root) {
+            return {
+                contentHtml: content,
+                tocHtml: '<div class="pages-pub-toc-empty">暂无目录</div>',
+                hasToc: false,
+            };
+        }
+        const copiedMap = new Map();
+        Array.from(root.querySelectorAll("link[href], script[src], img[src], source[src]")).forEach((el) => {
+            const attr = el.hasAttribute("href") ? "href" : "src";
+            const raw = el.getAttribute(attr) || "";
+            const rewritten = this.rewritePublishedResourcePath(raw, { targetDir, sharedBase, copiedMap });
+            if (rewritten.ok && rewritten.value && rewritten.value !== raw) {
+                el.setAttribute(attr, rewritten.value);
+            }
+        });
+        const tocItems = this.buildStaticTocData(root);
+        return {
+            contentHtml: root.innerHTML,
+            tocHtml: this.generateStaticTocHtml(tocItems),
+            hasToc: tocItems.length > 0,
+        };
+    }
+
+    validatePublishedHtml(targetDir) {
+        const indexPath = path.join(targetDir, "index.html");
+        if (!fs.existsSync(indexPath)) {
+            return { ok: false, invalidPaths: [], missingAssets: ["index.html"] };
+        }
+        const html = fs.readFileSync(indexPath, "utf-8");
+        const invalidPaths = [];
+        const missingAssets = [];
+        const DOMParserCtor = globalThis.window?.DOMParser || globalThis.DOMParser;
+        if (DOMParserCtor) {
+            const parser = new DOMParserCtor();
+            const doc = parser.parseFromString(html, "text/html");
+            Array.from(doc.querySelectorAll("link[href], script[src], img[src], source[src]")).forEach((el) => {
+                const attr = el.hasAttribute("href") ? "href" : "src";
+                const raw = (el.getAttribute(attr) || "").trim();
+                const { path: refPath } = this.splitResourceRef(raw);
+                if (!refPath || refPath.startsWith("#") || this.isExternalResourceRef(refPath)) return;
+                if (this.isLocalAbsoluteResource(refPath)) {
+                    invalidPaths.push(raw);
+                    return;
+                }
+                const resolved = path.resolve(targetDir, refPath.replace(/\//g, path.sep));
+                if (!fs.existsSync(resolved)) {
+                    missingAssets.push(raw);
+                }
+            });
+        }
+        return {
+            ok: invalidPaths.length === 0 && missingAssets.length === 0,
+            invalidPaths: Array.from(new Set(invalidPaths)),
+            missingAssets: Array.from(new Set(missingAssets)),
+        };
+    }
+
     // === SiYuan 原生 HTML(SiYuan) 外壳 ===
-    async buildSiYuanNativeHTML(content, title, sharedBase = ".") {
+    async buildSiYuanNativeHTML(content, title, options = {}) {
+        const sharedBase = options.sharedBase || ".";
+        const buildToken = String(options.buildToken || Date.now());
+        const prepared = this.preparePublishedContent(content, {
+            targetDir: options.targetDir,
+            sharedBase,
+        });
         const siyuan = globalThis.window?.siyuan || {};
         const appearance = siyuan.config?.appearance || {};
         const editor = siyuan.config?.editor || {};
@@ -2106,14 +2402,16 @@ class PagesPublisher extends Plugin {
         const skipThemeStyle = (mode === 1 && darkTheme === "midnight") || (mode === 0 && lightTheme === "daylight");
         const themeStyle = skipThemeStyle
             ? ""
-            : `<link rel="stylesheet" type="text/css" id="themeStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?${this.esc(version)}"/>`;
+            : `<link rel="stylesheet" type="text/css" id="themeStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(buildToken)}"/>`;
         const safeTitle = this.esc(title || "Untitled");
         const js = (v) => JSON.stringify(v ?? "");
         const iconName = appearance.icon || "material";
-        const iconScripts = (["ant", "material"].includes(iconName) ? "" : `<script src="${this.esc(sharedBase)}/appearance/icons/material/icon.js?v=${this.esc(version)}"></script>`)
-            + `<script src="${this.esc(sharedBase)}/appearance/icons/${this.esc(iconName)}/icon.js?v=${this.esc(version)}"></script>`;
+        const iconScripts = (["ant", "material"].includes(iconName) ? "" : `<script src="${this.esc(sharedBase)}/appearance/icons/material/icon.js?v=${this.esc(buildToken)}"></script>`)
+            + `<script src="${this.esc(sharedBase)}/appearance/icons/${this.esc(iconName)}/icon.js?v=${this.esc(buildToken)}"></script>`;
         const petalCSS = await this.getPetalCSS();
         const protyleBase = `${this.esc(sharedBase)}/stage/protyle`;
+        const tocStateClass = prepared.hasToc ? "" : " pages-pub-toc--empty";
+        const bodyStateClass = prepared.hasToc ? "" : " pages-pub-no-toc";
 
         return `<!DOCTYPE html>
 <html lang="${this.esc(lang)}" data-theme-mode="${themeMode}" data-light-theme="${this.esc(lightTheme)}" data-dark-theme="${this.esc(darkTheme)}">
@@ -2124,9 +2422,9 @@ class PagesPublisher extends Plugin {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"/>
     <meta name="mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    <link rel="stylesheet" type="text/css" id="baseStyle" href="${this.esc(sharedBase)}/stage/build/export/base.css?v=${this.esc(version)}"/>
-    <link rel="stylesheet" type="text/css" id="themeDefaultStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(version)}"/>
-    <script src="${this.esc(sharedBase)}/stage/protyle/js/protyle-html.js?v=${this.esc(version)}"></script>
+    <link rel="stylesheet" type="text/css" id="baseStyle" href="${this.esc(sharedBase)}/stage/build/export/base.css?v=${this.esc(buildToken)}"/>
+    <link rel="stylesheet" type="text/css" id="themeDefaultStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(buildToken)}"/>
+    <script src="${this.esc(sharedBase)}/stage/protyle/js/protyle-html.js?v=${this.esc(buildToken)}"></script>
     ${themeStyle}
     <title>${safeTitle}</title>
     <!-- Exported by SiYuan v${this.esc(version)} -->
@@ -2166,26 +2464,26 @@ class PagesPublisher extends Plugin {
     </style>
     ${this.getEnabledSnippetCSS()}
 </head>
-<body>
+<body class="${bodyStateClass.trim()}">
 <div class="pages-pub-layout">
-    <aside id="pages-pub-toc" aria-label="目录">
+    <aside id="pages-pub-toc" aria-label="目录" class="${tocStateClass.trim()}">
         <div class="pages-pub-toc__head">
             <div class="pages-pub-toc__title">目录</div>
             <button type="button" class="pages-pub-toc__toggle" id="pages-pub-toc-toggle" aria-expanded="false">展开</button>
         </div>
         <div class="pages-pub-toc__body">
             <div class="pages-pub-toc__list" id="pages-pub-toc-list">
-                <div class="pages-pub-toc-empty">正在生成目录...</div>
+                ${prepared.tocHtml}
             </div>
         </div>
     </aside>
     <main class="pages-pub-main">
-        <div class="protyle-wysiwyg${editor.displayBookmarkIcon === false ? "" : " protyle-wysiwyg--attr"}" id="preview">${content}</div>
+        <div class="protyle-wysiwyg${editor.displayBookmarkIcon === false ? "" : " protyle-wysiwyg--attr"}" id="preview">${prepared.contentHtml}</div>
     </main>
 </div>
 ${iconScripts}
-<script src="${this.esc(sharedBase)}/stage/build/export/protyle-method.js?v=${this.esc(version)}"></script>
-<script src="${this.esc(sharedBase)}/stage/protyle/js/lute/lute.min.js?v=${this.esc(version)}"></script>  
+<script src="${this.esc(sharedBase)}/stage/build/export/protyle-method.js?v=${this.esc(buildToken)}"></script>
+<script src="${this.esc(sharedBase)}/stage/protyle/js/lute/lute.min.js?v=${this.esc(buildToken)}"></script>  
 <script>
 window.siyuan = {
   config: {
@@ -2229,114 +2527,25 @@ function initPagesPubToc() {
   const list = document.getElementById("pages-pub-toc-list");
   const toggle = document.getElementById("pages-pub-toc-toggle");
   if (!preview || !toc || !list) return;
-
-  function getHeadingNodes(root) {
-    const selector = [
-      "h1", "h2", "h3", "h4",
-      "[data-type='NodeHeading']",
-      "[data-type~='NodeHeading']",
-      "[data-subtype='h1']",
-      "[data-subtype='h2']",
-      "[data-subtype='h3']",
-      "[data-subtype='h4']",
-      ".h1", ".h2", ".h3", ".h4"
-    ].join(",");
-    const seen = new Set();
-    return Array.from(root.querySelectorAll(selector))
-      .filter((node) => {
-        if (seen.has(node)) return false;
-        seen.add(node);
-        if (toc.contains(node)) return false;
-        const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
-        return !!text;
-      })
-      .map((node) => {
-        const tag = node.tagName ? node.tagName.toLowerCase() : "";
-        let level = 2;
-        const tagMatch = tag.match(/^h([1-4])$/);
-        if (tagMatch) {
-          level = Number(tagMatch[1]);
-        } else {
-          const subtype = node.getAttribute("data-subtype") || "";
-          const subtypeMatch = subtype.match(/^h([1-4])$/i);
-          if (subtypeMatch) {
-            level = Number(subtypeMatch[1]);
-          } else if (node.classList) {
-            for (let i = 1; i <= 4; i += 1) {
-              if (node.classList.contains("h" + i)) {
-                level = i;
-                break;
-              }
-            }
-          }
-        }
-        return {
-          node,
-          level,
-          text: String(node.textContent || "").replace(/\s+/g, " ").trim()
-        };
-      });
-  }
-
-  function slugify(text) {
-    const input = String(text || "").trim().toLowerCase();
-    const normalized = input.normalize ? input.normalize("NFKD") : input;
-    const withoutMarks = normalized.replace(/[\\u0300-\\u036f]/g, "");
-    const cleaned = withoutMarks
-      .replace(/[^\\w\\u4e00-\\u9fff\\-\\s]/g, " ")
-      .replace(/[_\\s]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    return cleaned || "section";
-  }
-
-  const headings = getHeadingNodes(preview);
-  console.debug("[Pages Publisher] TOC headings:", headings.length);
+  const links = Array.from(list.querySelectorAll(".pages-pub-toc-link"));
+  const headings = links.map((link) => {
+    const targetId = decodeURIComponent(link.dataset.targetId || (link.getAttribute("href") || "").replace(/^#/, ""));
+    const node = document.getElementById(targetId);
+    return node ? { node, id: targetId, link } : null;
+  }).filter(Boolean);
   if (!headings.length) {
     toc.classList.add("pages-pub-toc--empty");
     document.body.classList.add("pages-pub-no-toc");
-    list.innerHTML = '<div class="pages-pub-toc-empty">暂无目录</div>';
+    if (!list.children.length) {
+      list.innerHTML = '<div class="pages-pub-toc-empty">暂无目录</div>';
+    }
     return;
   }
-
   toc.classList.remove("pages-pub-toc--empty");
   document.body.classList.remove("pages-pub-no-toc");
-
-  const documentIds = Array.from(document.querySelectorAll("[id]")).map((el) => el.id).filter(Boolean);
-  const idCounts = documentIds.reduce((acc, id) => {
-    acc[id] = (acc[id] || 0) + 1;
-    return acc;
-  }, {});
-  const usedIds = new Set();
   let activeId = "";
-
-  function ensureId(node, text) {
-    const current = (node.getAttribute("id") || "").trim();
-    if (current && (idCounts[current] || 0) === 1 && !usedIds.has(current)) {
-      usedIds.add(current);
-      return current;
-    }
-    const base = slugify(text || "heading");
-    let id = base;
-    let index = 1;
-    while (usedIds.has(id)) {
-      id = base + "-" + index;
-      index += 1;
-    }
-    node.id = id;
-    usedIds.add(id);
-    return id;
-  }
-
-  list.innerHTML = "";
-  const links = [];
   headings.forEach((item) => {
-    const id = ensureId(item.node, item.text);
-    const link = document.createElement("a");
-    link.className = "pages-pub-toc-link toc-level-" + Math.min(Math.max(item.level, 1), 4);
-    link.href = "#" + encodeURIComponent(id);
-    link.textContent = item.text;
-    link.dataset.targetId = id;
+    const { id, link } = item;
     link.addEventListener("click", (event) => {
       event.preventDefault();
       const target = document.getElementById(id);
@@ -2354,15 +2563,13 @@ function initPagesPubToc() {
         }
       }
     });
-    list.appendChild(link);
-    links.push(link);
   });
 
   function setActive(id) {
     if (!id || id === activeId) return;
     activeId = id;
-    links.forEach((item) => {
-      item.classList.toggle("active", item.dataset.targetId === id);
+    headings.forEach((item) => {
+      item.link.classList.toggle("active", item.id === id);
     });
   }
 
@@ -2619,14 +2826,78 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     }
 
     // === Git push ===
-    async gitPush(repoPath, title, scopeDir, commitMessage) {
+    classifyGitPushError(err) {
+        const raw = `${err?.stderr || ""}\n${err?.stdout || ""}\n${err?.message || ""}`;
+        const text = raw.toLowerCase();
+        if (
+            text.includes("[rejected]") ||
+            text.includes("fetch first") ||
+            text.includes("non-fast-forward") ||
+            text.includes("updates were rejected because the remote contains work")
+        ) {
+            return "REMOTE_AHEAD";
+        }
+        if (
+            text.includes("failed to connect to github.com port 443") ||
+            text.includes("could not connect to server") ||
+            text.includes("could not resolve host") ||
+            text.includes("network is unreachable") ||
+            text.includes("connection timed out") ||
+            text.includes("operation timed out") ||
+            text.includes("rpc failed") ||
+            text.includes("low speed") ||
+            err?.killed === true
+        ) {
+            return "NETWORK_ERROR";
+        }
+        if (
+            text.includes("authentication failed") ||
+            text.includes("could not read username") ||
+            text.includes("permission denied") ||
+            text.includes("repository not found") ||
+            text.includes("403")
+        ) {
+            return "AUTH_ERROR";
+        }
+        return "";
+    }
+
+    buildGitPushHint(errorType) {
+        if (errorType === "REMOTE_AHEAD") {
+            return [
+                "GitHub 远程仓库已有新提交，本地缺少远程内容。请先同步远程后再推送，或选择强制覆盖远程。",
+                "同步远程后推送：git pull --rebase origin main && git push origin main",
+                "强制覆盖远程：git push origin main --force-with-lease",
+            ].join("\n");
+        }
+        if (errorType === "NETWORK_ERROR") {
+            return "Git 无法连接 GitHub，请检查代理、VPN、DNS 或 Git 代理配置。本地提交已保留，网络恢复后可再次补推。";
+        }
+        if (errorType === "AUTH_ERROR") {
+            return "GitHub 身份验证失败，请检查 token、仓库权限或远程地址。";
+        }
+        return "Git 推送失败，本地提交已保留，请检查 Git 输出后重试。";
+    }
+
+    async stagePublishedPaths(repoPath, scopeDir, options) {
+        if (!scopeDir) {
+            await this.runCommand("git add -A", options);
+            return;
+        }
+        await this.runCommand(`git add -A -- "${scopeDir}"`, options);
+        const sharedRoot = this.getSharedAssetsRoot(repoPath);
+        if (options?.includeSharedAssets && fs.existsSync(sharedRoot)) {
+            await this.runCommand(`git add -A -- "${SHARED_ASSETS_DIR}"`, options);
+        }
+    }
+
+    async gitPush(repoPath, title, scopeDir, commitMessage, pushOptions = {}) {
         let committed = false;
         try {
-            const o={cwd:repoPath};
+            const o = { cwd: repoPath, includeSharedAssets: !!pushOptions.includeSharedAssets };
             await this.runCommand("git rev-parse --git-dir", o);
             this.setProgress(82, "Git 暂存变更...");
-            if (scopeDir) await this.runCommand(`git add -A -- "${scopeDir}"`,o);
-            else await this.runCommand("git add -A",o);
+            await this.stagePublishedPaths(repoPath, scopeDir, o);
             let changed=false;
             try{
                 await this.runCommand("git diff --cached --quiet", o);
@@ -2651,12 +2922,13 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             this.setProgress(92, "推送到远程仓库...");
             showMessage("推送中...",2000,"info");
             await this.runGitPushWithRetry(o);
+            return { committed, pushed: true, errorType: "" };
         }catch(err){
             const m = this.formatError(err);
-            const hint = /Could not connect|Failed to connect|Connection was reset|unable to access/i.test(m)
-                ? "网络无法连接 GitHub；本地提交已保留，网络恢复后再次点击发布会自动补推。"
-                : "本地提交已保留，请修复 Git 问题后再次发布。";
-            showMessage(`${committed ? "Git 推送失败" : "Git 失败"}: ${hint}\n${m}`, 8000, "error");
+            const errorType = this.classifyGitPushError(err);
+            const hint = this.buildGitPushHint(errorType);
+            err.gitPushErrorType = errorType;
+            showMessage(`${committed ? "Git 推送失败" : "Git 失败"}: ${hint}\n${m}`, 9000, "error");
             err._pagesMessageShown = true;
             throw err;
         }
@@ -2664,17 +2936,23 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
 
     async runGitPushWithRetry(options) {
         const attempts = [
-            "git push",
-            "git -c http.version=HTTP/1.1 push",
-            "git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 push",
+            "git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
+            "git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
+            "git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
         ];
         let lastErr = null;
         for (const cmd of attempts) {
             try {
-                await this.runCommand(cmd, options);
+                showMessage("正在推送到 GitHub，若代理或网络卡住将自动超时重试...", 2500, "info");
+                await this.runCommand(cmd, { ...options, timeoutMs: 1_200_000 });
                 return;
             } catch (err) {
                 lastErr = err;
+                const errorType = this.classifyGitPushError(err);
+                if (errorType === "REMOTE_AHEAD" || errorType === "AUTH_ERROR") {
+                    err.gitPushErrorType = errorType;
+                    throw err;
+                }
             }
         }
         throw lastErr;
@@ -2696,6 +2974,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             cwd: options.cwd,
             windowsHide: true,
             maxBuffer: 10 * 1024 * 1024,
+            timeout: options.timeoutMs || 0,
         });
     }
 
