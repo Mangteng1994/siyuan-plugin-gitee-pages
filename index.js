@@ -327,6 +327,9 @@ class PagesPublisher extends Plugin {
                 align-items: center;
                 gap: 6px;
             }
+            .config__tab-container .b3-label.pp-field .b3-label__text > :not(:first-child) {
+                display: none !important;
+            }
             .config__tab-container .b3-label.pp-field .b3-label__text > span:last-child {
                 display: none !important;
                 margin-top: 0 !important;
@@ -594,9 +597,6 @@ class PagesPublisher extends Plugin {
                 background: color-mix(in srgb, var(--b3-theme-surface) 78%, var(--b3-theme-background));
                 border: 1px solid var(--b3-border-color);
                 flex: 0 0 auto;
-            }
-            .pp-share-subtitle {
-                display: none !important;
             }
             .pp-share-refresh,
             .pp-share-btn {
@@ -1150,7 +1150,7 @@ class PagesPublisher extends Plugin {
         // ── 平台选择 ──
         this.setting.addItem({
             title: "托管平台",
-            description: "选择发布到 Gitee Pages 或 GitHub Pages",
+            description: "",
             direction: "row",
             className: "pp-field pp-section-card pp-section-platform",
             createActionElement: () => {
@@ -1180,7 +1180,7 @@ class PagesPublisher extends Plugin {
         // ── 仓库路径 ──
         this.setting.addItem({
             title: "本地仓库路径",
-            description: "Pages 仓库在本地的克隆路径",
+            description: "",
             direction: "row",
             className: "pp-field pp-config-item pp-config-start",
             createActionElement: () => {
@@ -1199,7 +1199,7 @@ class PagesPublisher extends Plugin {
         // ── Pages URL ──
         this.setting.addItem({
             title: "Pages URL",
-            description: "发布后的访问地址",
+            description: "",
             direction: "row",
             className: "pp-field pp-config-item pp-config-mid",
             createActionElement: () => {
@@ -1218,7 +1218,7 @@ class PagesPublisher extends Plugin {
         // ── 站点标题 ──
         this.setting.addItem({
             title: "站点标题",
-            description: "HTML 页面顶部显示的站点名称",
+            description: "",
             direction: "row",
             className: "pp-field pp-config-item pp-config-mid",
             createActionElement: () => {
@@ -1237,7 +1237,7 @@ class PagesPublisher extends Plugin {
         // ── 自动推送 ──
         this.setting.addItem({
             title: "自动 Git 推送",
-            description: "导出 HTML 后自动 commit 并 push 到远程仓库",
+            description: "",
             className: "pp-field pp-config-item pp-config-end pp-switch-row",
             createActionElement: () => {
                 const inp = document.createElement("input");
@@ -1275,8 +1275,8 @@ class PagesPublisher extends Plugin {
         });
 
         this.setting.addItem({
-            title: "分享列表",
-            description: "查看已发布记录，并对历史分享执行复制、更新、打开目录、删除。",
+            title: "",
+            description: "",
             direction: "row",
             className: "pp-field pp-section-share",
             createActionElement: () => {
@@ -1300,7 +1300,7 @@ class PagesPublisher extends Plugin {
         head.className = "pp-share-head";
 
         const titleWrap = document.createElement("div");
-        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span><span class="pp-help" title="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。" aria-label="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。">?</span></div><div class="pp-share-subtitle">发布成功后会自动记录到这里</div>`;
+        titleWrap.innerHTML = `<div class="pp-share-title-row"><div class="pp-share-title">分享列表</div><span class="pp-share-count">0 条</span><span class="pp-help" title="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。" aria-label="发布成功后会自动记录到这里，可对历史分享执行复制、更新、打开目录、删除。">?</span></div>`;
 
         const toolbar = document.createElement("div");
         toolbar.className = "pp-share-toolbar";
