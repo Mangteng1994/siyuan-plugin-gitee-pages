@@ -2,10 +2,16 @@
   "name": "siyuan-plugin-gitee-pages",
   "author": "Mangteng1994",
   "url": "https://github.com/Mangteng1994/siyuan-plugin-gitee-pages",
-  "version": "2.1.0",
+  "version": "1.0.0",
   "minAppVersion": "3.0.0",
-  "backends": ["windows", "linux", "darwin"],
-  "frontends": ["desktop"],
+  "backends": [
+    "windows",
+    "linux",
+    "darwin"
+  ],
+  "frontends": [
+    "desktop"
+  ],
   "displayName": {
     "default": "Pages Publisher",
     "zh_CN": "Pages 发布"
@@ -18,5 +24,13 @@
     "default": "README.md",
     "zh_CN": "README_zh_CN.md"
   },
-  "keywords": ["publish", "gitee", "github", "pages", "html", "发布"]
+  "keywords": [
+    "publish",
+    "gitee",
+    "github",
+    "pages",
+    "html",
+    "发布"
+  ],
+  "license": "MIT"
 }

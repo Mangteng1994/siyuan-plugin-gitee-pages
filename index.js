@@ -916,19 +916,24 @@ class PagesPublisher extends Plugin {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                width: 16px;
-                height: 16px;
-                min-width: 16px;
-                margin-left: 6px;
-                color: #4f8cff;
-                flex: 0 0 auto;
-                vertical-align: middle;
-            }
-            .pp-tree-share-icon svg {
                 width: 14px;
                 height: 14px;
+                min-width: 14px;
+                margin-left: 4px;
+                color: color-mix(in srgb, var(--b3-theme-primary, #4f8cff) 84%, #ffffff 16%);
+                flex: 0 0 auto;
+                vertical-align: middle;
+                opacity: .88;
+            }
+            .pp-tree-share-icon svg {
+                width: 12px;
+                height: 12px;
                 display: block;
                 fill: currentColor;
+            }
+            .pp-tree-share-anchor {
+                display: inline-flex;
+                align-items: center;
             }
             .pp-share-error-tip {
                 margin-top: -2px;
@@ -1103,8 +1108,13 @@ class PagesPublisher extends Plugin {
     isLikelyTreeItem(node) {
         if (!node || typeof node.closest !== "function") return false;
         if (node.closest(".protyle, .protyle-wysiwyg, .block__popover, .layout-tab-bar")) return false;
-        if (node.classList?.contains("b3-list-item")) return true;
-        return !!node.closest(".sy__file, .file-tree, [data-type='sidebar-file'], [data-type='file']") && !!node.closest(".b3-list-item");
+        if (!node.classList?.contains("b3-list-item")) return false;
+        const hasDocId = !!this.getTreeItemDocId(node);
+        if (!hasDocId) return false;
+        if (node.getAttribute("data-type") === "navigation-file") return true;
+        if (node.getAttribute("data-type") === "navigation-root") return false;
+        if (node.querySelector(".b3-list-item__toggle")) return false;
+        return !!node.closest(".sy__file, .file-tree, [data-type='sidebar-file'], [data-type='file']");
     }
 
     getTreeItemDocId(node) {
@@ -1149,7 +1159,8 @@ class PagesPublisher extends Plugin {
             if (existed) return;
             const anchor = row.querySelector(".b3-list-item__text, .b3-list-item__name, .b3-list-item__title, .b3-list-item__label");
             const icon = this.createTreeShareIcon();
-            if (anchor && anchor.parentNode) {
+            if (anchor) {
+                anchor.classList.add("pp-tree-share-anchor");
                 anchor.insertAdjacentElement("afterend", icon);
             } else {
                 row.appendChild(icon);
