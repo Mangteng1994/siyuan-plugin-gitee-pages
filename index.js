@@ -13,6 +13,15 @@ const STORAGE_KEY = "pages-pub-config";
 const STORAGE_FILE = "pages-pub-config";
 const SHARED_ASSETS_DIR = "pages-pub-assets";
 const execAsync = promisify(exec);
+const KNOWN_PUSH_ERROR_TYPES = [
+    "REMOTE_AHEAD",
+    "NETWORK_ERROR",
+    "AUTH_ERROR",
+    "SECRET_PUSH_PROTECTION",
+    "STAGE_PATH_NOT_FOUND",
+    "REBASE_CONFLICT",
+    "UPSTREAM_MISSING",
+];
 
 class PagesPublisher extends Plugin {
     constructor(options) {
@@ -29,6 +38,9 @@ class PagesPublisher extends Plugin {
         this.openSetting = this.openSetting.bind(this);
         this.publishTask = null;
         this.progressEl = null;
+        this.shareListContainer = null;
+        this.treeMarkerObserver = null;
+        this.treeMarkerTimer = null;
     }
 
     defaultConfig() {
@@ -67,7 +79,7 @@ class PagesPublisher extends Plugin {
         const createdAt = record.createdAt || record.updatedAt || new Date().toISOString();
         const updatedAt = record.updatedAt || createdAt;
         const pushStatus = ["pending", "success", "failed"].includes(record.pushStatus) ? record.pushStatus : "success";
-        const lastPushErrorType = ["REMOTE_AHEAD", "NETWORK_ERROR", "AUTH_ERROR"].includes(record.lastPushErrorType) ? record.lastPushErrorType : "";
+        const lastPushErrorType = KNOWN_PUSH_ERROR_TYPES.includes(record.lastPushErrorType) ? record.lastPushErrorType : "";
         return {
             id: String(record.id || `${platform}-${record.docId || "doc"}-${record.slug || "share"}`),
             docId: String(record.docId || ""),
@@ -82,6 +94,7 @@ class PagesPublisher extends Plugin {
             publishStatus: "local_saved",
             pushStatus,
             lastPushErrorType,
+            lastPushErrorMessage: String(record.lastPushErrorMessage || ""),
             access: record.access && typeof record.access === "object" ? record.access : undefined,
         };
     }
@@ -150,11 +163,22 @@ class PagesPublisher extends Plugin {
             this.currentProtyle = detail?.protyle;
             this.updateDocInfo("loaded-protyle-dynamic");
         });
+        this.initTreeMarkerSync();
+        this.scheduleRefreshTreeShareMarkers();
     }
 
     onunload() {
         this.eventBus.off("switch-protyle");
         this.eventBus.off("loaded-protyle-dynamic");
+        if (this.treeMarkerObserver) {
+            this.treeMarkerObserver.disconnect();
+            this.treeMarkerObserver = null;
+        }
+        if (this.treeMarkerTimer) {
+            clearTimeout(this.treeMarkerTimer);
+            this.treeMarkerTimer = null;
+        }
+        document.querySelectorAll(".pp-tree-share-icon").forEach((node) => node.remove());
     }
 
     openSetting() {
@@ -282,6 +306,7 @@ class PagesPublisher extends Plugin {
         inp.addEventListener("change", async () => {
             data.autoCommit = inp.checked;
             await this.persistConfigAndWait(data);
+            this.refreshShareListIfVisible();
         });
 
         wrap.appendChild(inp);
@@ -880,6 +905,267 @@ class PagesPublisher extends Plugin {
         `;
     }
 
+    ensureUtilityDialogStyle() {
+        const id = "siyuan-pages-pub-utility-style";
+        let style = document.getElementById(id);
+        if (!style) {
+            style = document.createElement("style");
+            style.id = id;
+            document.head.appendChild(style);
+        }
+        style.textContent = `
+            .pp-tree-share-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                min-width: 16px;
+                margin-left: 6px;
+                color: #4f8cff;
+                flex: 0 0 auto;
+                vertical-align: middle;
+            }
+            .pp-tree-share-icon svg {
+                width: 14px;
+                height: 14px;
+                display: block;
+                fill: currentColor;
+            }
+            .pp-share-error-tip {
+                margin-top: -2px;
+                padding: 8px 10px;
+                border-radius: 8px;
+                font-size: 12px;
+                line-height: 1.5;
+                background: color-mix(in srgb, #d23f31 10%, var(--b3-theme-surface));
+                color: #d23f31;
+            }
+            .pp-modal-mask {
+                position: fixed;
+                inset: 0;
+                z-index: 100001;
+                background: rgba(0, 0, 0, .35);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .pp-modal {
+                width: min(720px, 96vw);
+                max-height: min(82vh, 860px);
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                border-radius: 16px;
+                border: 1px solid var(--b3-border-color);
+                background: var(--b3-theme-surface);
+                box-shadow: 0 18px 60px rgba(0, 0, 0, .24);
+            }
+            .pp-modal__head {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 12px;
+                padding: 18px 20px 14px;
+                border-bottom: 1px solid var(--b3-border-color);
+            }
+            .pp-modal__title {
+                font-size: 16px;
+                font-weight: 600;
+                color: var(--b3-theme-on-background);
+            }
+            .pp-modal__desc {
+                margin-top: 6px;
+                font-size: 12px;
+                line-height: 1.6;
+                color: var(--b3-theme-on-surface-light);
+                white-space: pre-wrap;
+            }
+            .pp-modal__close {
+                border: 1px solid var(--b3-border-color);
+                background: var(--b3-theme-background);
+                color: var(--b3-theme-on-background);
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .pp-modal__body {
+                padding: 16px 20px 20px;
+                overflow: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+            .pp-modal__actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+            .pp-modal__btn {
+                border: 1px solid var(--b3-border-color);
+                background: var(--b3-theme-background);
+                color: var(--b3-theme-on-background);
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .pp-modal__btn:hover {
+                border-color: var(--b3-theme-primary);
+                color: var(--b3-theme-primary);
+            }
+            .pp-modal__btn--primary {
+                border-color: var(--b3-theme-primary);
+                background: var(--b3-theme-primary);
+                color: #fff;
+            }
+            .pp-modal__btn--danger {
+                border-color: #d23f31;
+                color: #d23f31;
+            }
+            .pp-modal__btn:disabled,
+            .pp-modal__close:disabled {
+                opacity: .55;
+                cursor: not-allowed;
+            }
+            .pp-modal__meta {
+                display: grid;
+                grid-template-columns: 96px 1fr;
+                gap: 8px 12px;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+            .pp-modal__meta-label {
+                color: var(--b3-theme-on-surface-light);
+            }
+            .pp-modal__meta-value {
+                color: var(--b3-theme-on-background);
+                word-break: break-all;
+            }
+            .pp-modal__log {
+                margin: 0;
+                padding: 12px;
+                border-radius: 10px;
+                border: 1px solid var(--b3-border-color);
+                background: color-mix(in srgb, var(--b3-theme-background) 86%, #000 14%);
+                color: var(--b3-theme-on-background);
+                font-size: 12px;
+                line-height: 1.6;
+                white-space: pre-wrap;
+                word-break: break-word;
+                font-family: var(--b3-font-family-code, ui-monospace, monospace);
+            }
+        `;
+    }
+
+    initTreeMarkerSync() {
+        this.ensureUtilityDialogStyle();
+        if (this.treeMarkerObserver) {
+            this.treeMarkerObserver.disconnect();
+        }
+        const start = () => {
+            if (this.treeMarkerObserver) {
+                this.treeMarkerObserver.disconnect();
+            }
+            this.treeMarkerObserver = new MutationObserver(() => {
+                this.scheduleRefreshTreeShareMarkers();
+            });
+            this.treeMarkerObserver.observe(document.body, {
+                childList: true,
+                subtree: true,
+            });
+        };
+        if (document.body) {
+            start();
+        } else {
+            window.setTimeout(start, 300);
+        }
+    }
+
+    scheduleRefreshTreeShareMarkers() {
+        if (this.treeMarkerTimer) {
+            clearTimeout(this.treeMarkerTimer);
+        }
+        this.treeMarkerTimer = setTimeout(() => {
+            this.treeMarkerTimer = null;
+            this.refreshTreeShareMarkers();
+        }, 80);
+    }
+
+    getSharedDocIdSet() {
+        return new Set(
+            this.getShareRecords()
+                .map((record) => String(record?.docId || "").trim())
+                .filter(Boolean)
+        );
+    }
+
+    isLikelyTreeItem(node) {
+        if (!node || typeof node.closest !== "function") return false;
+        if (node.closest(".protyle, .protyle-wysiwyg, .block__popover, .layout-tab-bar")) return false;
+        if (node.classList?.contains("b3-list-item")) return true;
+        return !!node.closest(".sy__file, .file-tree, [data-type='sidebar-file'], [data-type='file']") && !!node.closest(".b3-list-item");
+    }
+
+    getTreeItemDocId(node) {
+        if (!node) return "";
+        const candidates = [
+            node.getAttribute?.("data-node-id"),
+            node.dataset?.nodeId,
+            node.dataset?.id,
+            node.getAttribute?.("data-id"),
+        ].filter(Boolean);
+        const matched = candidates.find((value) => /^\d{14}-[a-z0-9]+$/i.test(String(value).trim()));
+        return matched ? String(matched).trim() : "";
+    }
+
+    createTreeShareIcon() {
+        const icon = document.createElement("span");
+        icon.className = "pp-tree-share-icon";
+        icon.title = "已分享";
+        icon.setAttribute("aria-label", "已分享");
+        icon.innerHTML = `
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18 16a3 3 0 0 0-2.39 1.2l-6.44-3.22a3.1 3.1 0 0 0 0-1.96l6.44-3.22A3 3 0 1 0 15 7a3.1 3.1 0 0 0 .09.74L8.65 10.96a3 3 0 1 0 0 2.08l6.44 3.22A3.1 3.1 0 0 0 15 17a3 3 0 1 0 3-1Z"></path>
+            </svg>
+        `;
+        return icon;
+    }
+
+    refreshTreeShareMarkers() {
+        const sharedDocIds = this.getSharedDocIdSet();
+        const rows = Array.from(document.querySelectorAll(".b3-list-item[data-node-id], .b3-list-item [data-node-id]"));
+        const visited = new Set();
+        rows.forEach((node) => {
+            const row = node.classList?.contains("b3-list-item") ? node : node.closest(".b3-list-item");
+            if (!row || visited.has(row) || !this.isLikelyTreeItem(row)) return;
+            visited.add(row);
+            const docId = this.getTreeItemDocId(row) || this.getTreeItemDocId(node);
+            const existed = row.querySelector(".pp-tree-share-icon");
+            if (!docId || !sharedDocIds.has(docId)) {
+                existed?.remove();
+                return;
+            }
+            if (existed) return;
+            const anchor = row.querySelector(".b3-list-item__text, .b3-list-item__name, .b3-list-item__title, .b3-list-item__label");
+            const icon = this.createTreeShareIcon();
+            if (anchor && anchor.parentNode) {
+                anchor.insertAdjacentElement("afterend", icon);
+            } else {
+                row.appendChild(icon);
+            }
+        });
+        document.querySelectorAll(".pp-tree-share-icon").forEach((icon) => {
+            const row = icon.closest(".b3-list-item");
+            const docId = this.getTreeItemDocId(row);
+            if (!row || !docId || !sharedDocIds.has(docId) || !this.isLikelyTreeItem(row)) {
+                icon.remove();
+            }
+        });
+    }
+
     updateDocInfo(source = "active-protyle") {
         this.refreshLastActiveDocInfo(source).catch(() => {});
     }
@@ -1169,7 +1455,11 @@ class PagesPublisher extends Plugin {
         if (!normalized) return null;
         const data = this.data[STORAGE_KEY] || this.defaultConfig();
         const shares = Array.isArray(data.shares) ? data.shares.slice() : [];
-        const existingIndex = shares.findIndex((item) => item && item.docId === normalized.docId && item.platform === normalized.platform);
+        const existingIndex = shares.findIndex((item) => {
+            if (!item) return false;
+            if (normalized.id && item.id === normalized.id) return true;
+            return item.docId === normalized.docId && item.platform === normalized.platform;
+        });
         if (existingIndex >= 0) {
             const existing = this.normalizeShareRecord(shares[existingIndex]);
             shares[existingIndex] = {
@@ -1197,6 +1487,7 @@ class PagesPublisher extends Plugin {
             platform: normalized.platform,
             totalShares: persistedShares.length,
         });
+        this.scheduleRefreshTreeShareMarkers();
         return saved;
     }
 
@@ -1206,6 +1497,7 @@ class PagesPublisher extends Plugin {
         const nextShares = shares.filter((item) => item?.id !== id);
         data.shares = nextShares;
         await this.persistConfigAndWait(data);
+        this.scheduleRefreshTreeShareMarkers();
     }
 
     // 显示设置+发布面板
@@ -1365,6 +1657,7 @@ class PagesPublisher extends Plugin {
             className: "pp-field pp-section-share",
             createActionElement: () => {
                 const wrap = this.buildShareListElement();
+                this.shareListContainer = wrap;
                 this.renderShareList(wrap);
                 return wrap;
             },
@@ -1451,6 +1744,12 @@ class PagesPublisher extends Plugin {
         body.appendChild(list);
     }
 
+    refreshShareListIfVisible() {
+        const container = this.shareListContainer;
+        if (!container || !container.isConnected) return;
+        this.renderShareList(container);
+    }
+
     getSharePushStatusMeta(record) {
         const status = record?.pushStatus || "success";
         if (status === "disabled") {
@@ -1481,9 +1780,22 @@ class PagesPublisher extends Plugin {
         };
     }
 
+    buildPushErrorLabel(errorType) {
+        if (errorType === "REMOTE_AHEAD") return "远程已有新提交，需要先同步";
+        if (errorType === "NETWORK_ERROR") return "网络或代理异常，未推送到远程";
+        if (errorType === "AUTH_ERROR") return "Git 认证失败";
+        if (errorType === "SECRET_PUSH_PROTECTION") return "推送内容触发 GitHub 保护规则";
+        if (errorType === "STAGE_PATH_NOT_FOUND") return "Git 暂存目录不存在";
+        if (errorType === "REBASE_CONFLICT") return "同步远程时发生 rebase 冲突";
+        if (errorType === "UPSTREAM_MISSING") return "当前分支没有配置上游";
+        return "";
+    }
+
     createShareCard(record, container) {
         const card = document.createElement("div");
         card.className = "pp-share-card";
+        const currentCfg = this.currentConfig(record.platform);
+        const autoPushEnabled = currentCfg.autoCommit;
 
         const safeUpdated = this.formatDateTime(record.updatedAt);
         const safeUrl = String(record.url || "").trim();
@@ -1511,6 +1823,13 @@ class PagesPublisher extends Plugin {
                 <div class="pp-share-grid-value pp-share-grid-value--link">${linkHtml}</div>
             </div>
         `;
+        const errorLabel = this.buildPushErrorLabel(record.lastPushErrorType);
+        if (record.pushStatus === "failed" && (errorLabel || record.lastPushErrorMessage)) {
+            const tip = document.createElement("div");
+            tip.className = "pp-share-error-tip";
+            tip.textContent = errorLabel || "最近一次远程推送失败";
+            card.appendChild(tip);
+        }
 
         const actions = document.createElement("div");
         actions.className = "pp-share-actions";
@@ -1522,21 +1841,31 @@ class PagesPublisher extends Plugin {
             await this.updateShare(record);
             this.renderShareList(container);
         });
+        const manualPushBtn = this.createShareActionButton("手动推送", async () => {
+            await this.manualPushShare(record);
+            this.renderShareList(container);
+        });
         const openBtn = this.createShareActionButton("打开本地目录", async () => {
             await this.openLocalPath(path.join(record.repoPath, record.slug));
         });
-        const retryPushBtn = this.createShareActionButton("补推远程", async () => {
+        const failureActionBtn = this.createShareActionButton(record.lastPushErrorType === "REMOTE_AHEAD" ? "处理冲突" : "重试推送", async () => {
             if (!record.repoPath) {
-                showMessage("缺少仓库路径，无法补推", 3000, "warn");
+                showMessage("缺少仓库路径，无法推送", 3000, "warn");
                 return;
             }
             try {
-                await this.squashAndForcePush(record.repoPath);
+                if (record.lastPushErrorType === "REMOTE_AHEAD") {
+                    await this.openRemoteAheadDialog(record.repoPath, () => this.renderShareList(container));
+                    return;
+                }
+                await this.manualPushShare(record);
                 this.renderShareList(container);
             } catch (e) {
-                // error already shown in squashAndForcePush
                 this.renderShareList(container);
             }
+        });
+        const diagBtn = this.createShareActionButton("查看诊断", async () => {
+            await this.openPushFailureDialog(record);
         });
         const deleteBtn = this.createShareActionButton("删除分享", async () => {
             await this.deleteShare(record);
@@ -1545,9 +1874,13 @@ class PagesPublisher extends Plugin {
 
         actions.appendChild(copyBtn);
         actions.appendChild(updateBtn);
+        if (!autoPushEnabled) {
+            actions.appendChild(manualPushBtn);
+        }
         actions.appendChild(openBtn);
-        if (record.pushStatus !== "disabled") {
-            actions.appendChild(retryPushBtn);
+        if (record.pushStatus === "failed") {
+            actions.appendChild(failureActionBtn);
+            actions.appendChild(diagBtn);
         }
         actions.appendChild(deleteBtn);
         card.appendChild(actions);
@@ -1587,6 +1920,48 @@ class PagesPublisher extends Plugin {
         }
     }
 
+    async manualPushShare(record) {
+        const repoPath = record?.repoPath || this.currentConfig(record?.platform).repoPath;
+        if (!repoPath) {
+            showMessage("缺少仓库路径，无法手动推送", 3000, "warn");
+            return;
+        }
+        try {
+            await this.gitPush(
+                repoPath,
+                record?.title || record?.slug || "Manual push",
+                record?.slug || "",
+                `Publish SiYuan HTML: ${record?.title || record?.slug || "Manual push"}`,
+                {
+                    includeSharedAssets: true,
+                    allowPushExistingAhead: true,
+                },
+            );
+            await this.upsertShareRecord({
+                ...record,
+                repoPath,
+                updatedAt: new Date().toISOString(),
+                publishStatus: "local_saved",
+                pushStatus: "success",
+                lastPushErrorType: "",
+                lastPushErrorMessage: "",
+            });
+            showMessage("手动推送成功", 3000, "info");
+        } catch (err) {
+            const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
+            await this.upsertShareRecord({
+                ...record,
+                repoPath,
+                updatedAt: new Date().toISOString(),
+                publishStatus: "local_saved",
+                pushStatus: "failed",
+                lastPushErrorType: errorType,
+                lastPushErrorMessage: this.formatError(err),
+            });
+            throw err;
+        }
+    }
+
 
     runPublishInBackground() {
         this.closePublishPanel();
@@ -1606,6 +1981,7 @@ class PagesPublisher extends Plugin {
 
     closePublishPanel() {
         try {
+            this.shareListContainer = null;
             if (typeof this.setting?.close === "function") { this.setting.close(); return; }
             if (typeof this.setting?.destroy === "function") { this.setting.destroy(); return; }
             if (typeof this.setting?.dialog?.destroy === "function") { this.setting.dialog.destroy(); return; }
@@ -1836,6 +2212,7 @@ class PagesPublisher extends Plugin {
             publishStatus: "local_saved",
             pushStatus: cfg.autoCommit ? "pending" : "disabled",
             lastPushErrorType: "",
+            lastPushErrorMessage: "",
         });
 
         if (source === "current") {
@@ -1879,23 +2256,35 @@ class PagesPublisher extends Plugin {
                 includeSharedAssets: sharedAssetsChanged,
                 allowPushExistingAhead: false,
             });
-            await this.upsertShareRecord({
+            const successRecord = await this.upsertShareRecord({
                 ...record,
                 updatedAt: new Date().toISOString(),
                 publishStatus: "local_saved",
                 pushStatus: "success",
                 lastPushErrorType: "",
+                lastPushErrorMessage: "",
             });
+            Object.assign(record, successRecord || {});
+            this.refreshShareListIfVisible();
             showMessage(`远程推送成功: ${record.url || slug}`, 4000, "info");
         } catch (err) {
             const errorType = err?.gitPushErrorType || "";
-            await this.upsertShareRecord({
+            const errorMessage = this.formatError(err);
+            const failedRecord = await this.upsertShareRecord({
                 ...record,
                 updatedAt: new Date().toISOString(),
                 publishStatus: "local_saved",
                 pushStatus: "failed",
                 lastPushErrorType: errorType,
+                lastPushErrorMessage: errorMessage,
             });
+            Object.assign(record, failedRecord || {});
+            this.refreshShareListIfVisible();
+            if (errorType === "REMOTE_AHEAD" && repoPath && !err?._pagesMessageShown) {
+                setTimeout(() => {
+                    this.openRemoteAheadDialog(repoPath).catch(() => {});
+                }, 120);
+            }
             if (!err?._pagesMessageShown) {
                 const hint = this.buildGitPushHint(errorType);
                 showMessage(`远程推送失败: ${hint}`, 6000, "warn");
@@ -2895,8 +3284,342 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         return out.join("\n");
     }
 
+    async runPublishPrecheck(repoPath) {
+        const o = { cwd: repoPath };
+        const issues = [];
+        try {
+            await this.runCommand("git --version", o);
+        } catch (err) {
+            issues.push("未检测到 Git CLI，请先安装 Git 并确保命令行可用。");
+            return { ok: false, issues };
+        }
+        try {
+            await this.runCommand("git rev-parse --git-dir", o);
+        } catch (err) {
+            issues.push("配置的路径不是 Git 仓库。");
+        }
+        try {
+            await this.getUpstreamInfo(o);
+        } catch (err) {
+            issues.push("当前分支没有配置上游分支，无法自动 pull/push。");
+        }
+        return { ok: issues.length === 0, issues };
+    }
+
+    async getUpstreamInfo(options) {
+        const { stdout: branchStdout } = await this.runCommand("git rev-parse --abbrev-ref HEAD", options);
+        const localBranch = String(branchStdout || "").trim();
+        const { stdout: upstreamStdout } = await this.runCommand("git rev-parse --abbrev-ref --symbolic-full-name @{u}", options);
+        const upstreamRef = String(upstreamStdout || "").trim();
+        const idx = upstreamRef.indexOf("/");
+        if (!upstreamRef || idx <= 0) {
+            const err = new Error("UPSTREAM_MISSING");
+            err.gitPushErrorType = "UPSTREAM_MISSING";
+            throw err;
+        }
+        return {
+            localBranch,
+            upstreamRef,
+            remoteName: upstreamRef.slice(0, idx),
+            remoteBranch: upstreamRef.slice(idx + 1),
+        };
+    }
+
+    async getRepoSyncStatus(repoPath) {
+        const o = { cwd: repoPath };
+        const upstream = await this.getUpstreamInfo(o);
+        await this.runCommand(`git fetch --prune ${upstream.remoteName}`, o);
+        const [{ stdout: remoteAheadStdout }, { stdout: localAheadStdout }, { stdout: remoteLogStdout }, { stdout: localLogStdout }] = await Promise.all([
+            this.runCommand("git rev-list --count HEAD..@{u}", o),
+            this.runCommand("git rev-list --count @{u}..HEAD", o),
+            this.runCommand("git log --oneline --decorate --max-count=20 HEAD..@{u}", o),
+            this.runCommand("git log --oneline --decorate --max-count=20 @{u}..HEAD", o),
+        ]);
+        return {
+            ...upstream,
+            remoteAhead: Number(String(remoteAheadStdout || "").trim() || "0"),
+            localAhead: Number(String(localAheadStdout || "").trim() || "0"),
+            remoteLog: String(remoteLogStdout || "").trim(),
+            localLog: String(localLogStdout || "").trim(),
+        };
+    }
+
+    async markRepoPushStatus(repoPath, pushStatus, errorType = "", errorMessage = "") {
+        const records = this.getShareRecords();
+        for (const r of records) {
+            if (r.repoPath === repoPath && r.pushStatus !== "disabled") {
+                await this.upsertShareRecord({
+                    ...r,
+                    updatedAt: new Date().toISOString(),
+                    pushStatus,
+                    lastPushErrorType: errorType,
+                    lastPushErrorMessage: errorMessage,
+                });
+            }
+        }
+    }
+
+    buildDiagnosticText({ repoPath, errorType, errorMessage, syncInfo }) {
+        const parts = [];
+        parts.push(`仓库路径: ${repoPath || "-"}`);
+        if (syncInfo?.localBranch) parts.push(`本地分支: ${syncInfo.localBranch}`);
+        if (syncInfo?.upstreamRef) parts.push(`上游分支: ${syncInfo.upstreamRef}`);
+        if (typeof syncInfo?.remoteAhead === "number") parts.push(`远程领先: ${syncInfo.remoteAhead}`);
+        if (typeof syncInfo?.localAhead === "number") parts.push(`本地领先: ${syncInfo.localAhead}`);
+        if (errorType) parts.push(`错误类型: ${errorType}`);
+        if (errorMessage) {
+            parts.push("");
+            parts.push("错误摘要:");
+            parts.push(errorMessage);
+        }
+        if (syncInfo?.remoteLog) {
+            parts.push("");
+            parts.push("远程新增提交:");
+            parts.push(syncInfo.remoteLog);
+        }
+        if (syncInfo?.localLog) {
+            parts.push("");
+            parts.push("本地待推送提交:");
+            parts.push(syncInfo.localLog);
+        }
+        return parts.join("\n");
+    }
+
+    createModal({ title, description = "", bodyBuilder }) {
+        this.ensureUtilityDialogStyle();
+        const mask = document.createElement("div");
+        mask.className = "pp-modal-mask";
+        const panel = document.createElement("div");
+        panel.className = "pp-modal";
+        const head = document.createElement("div");
+        head.className = "pp-modal__head";
+        const titleWrap = document.createElement("div");
+        titleWrap.innerHTML = `<div class="pp-modal__title">${this.esc(title)}</div>${description ? `<div class="pp-modal__desc">${this.esc(description)}</div>` : ""}`;
+        const closeBtn = document.createElement("button");
+        closeBtn.type = "button";
+        closeBtn.className = "pp-modal__close";
+        closeBtn.textContent = "关闭";
+        head.appendChild(titleWrap);
+        head.appendChild(closeBtn);
+        const body = document.createElement("div");
+        body.className = "pp-modal__body";
+        panel.appendChild(head);
+        panel.appendChild(body);
+        mask.appendChild(panel);
+        const close = () => mask.remove();
+        closeBtn.addEventListener("click", close);
+        mask.addEventListener("click", (event) => {
+            if (event.target === mask) close();
+        });
+        document.body.appendChild(mask);
+        if (typeof bodyBuilder === "function") {
+            bodyBuilder({ mask, panel, body, close, closeBtn });
+        }
+        return { mask, panel, body, close, closeBtn };
+    }
+
+    async openPushFailureDialog(record) {
+        const repoPath = record?.repoPath || "";
+        const title = record?.title || record?.slug || "分享记录";
+        const errorType = record?.lastPushErrorType || "";
+        const errorMessage = record?.lastPushErrorMessage || "暂无详细日志";
+        let syncInfo = null;
+        try {
+            if (repoPath) syncInfo = await this.getRepoSyncStatus(repoPath);
+        } catch (err) {
+            syncInfo = null;
+        }
+        this.createModal({
+            title: `推送诊断 · ${title}`,
+            description: this.buildGitPushHint(errorType),
+            bodyBuilder: ({ body }) => {
+                const meta = document.createElement("div");
+                meta.className = "pp-modal__meta";
+                meta.innerHTML = `
+                    <div class="pp-modal__meta-label">平台</div><div class="pp-modal__meta-value">${this.esc(record?.platform || "-")}</div>
+                    <div class="pp-modal__meta-label">仓库路径</div><div class="pp-modal__meta-value">${this.esc(repoPath || "-")}</div>
+                    <div class="pp-modal__meta-label">分享链接</div><div class="pp-modal__meta-value">${this.esc(record?.url || "-")}</div>
+                `;
+                const log = document.createElement("pre");
+                log.className = "pp-modal__log";
+                log.textContent = this.buildDiagnosticText({ repoPath, errorType, errorMessage, syncInfo });
+                body.appendChild(meta);
+                body.appendChild(log);
+            },
+        });
+    }
+
+    async retryPushRepo(repoPath) {
+        const o = { cwd: repoPath };
+        const precheck = await this.runPublishPrecheck(repoPath);
+        if (!precheck.ok) {
+            const err = new Error(precheck.issues.join("\n"));
+            err.gitPushErrorType = "UPSTREAM_MISSING";
+            await this.markRepoPushStatus(repoPath, "failed", err.gitPushErrorType, precheck.issues.join("\n"));
+            this.createModal({
+                title: "发布前检查未通过",
+                description: "请先修复以下问题，再重新推送。",
+                bodyBuilder: ({ body }) => {
+                    const log = document.createElement("pre");
+                    log.className = "pp-modal__log";
+                    log.textContent = precheck.issues.join("\n");
+                    body.appendChild(log);
+                },
+            });
+            throw err;
+        }
+        try {
+            await this.runGitPushWithRetry(o);
+            await this.markRepoPushStatus(repoPath, "success", "", "");
+            showMessage("远程补推成功", 3000, "info");
+        } catch (err) {
+            const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
+            const message = this.formatError(err);
+            await this.markRepoPushStatus(repoPath, "failed", errorType, message);
+            if (errorType === "REMOTE_AHEAD") {
+                await this.openRemoteAheadDialog(repoPath);
+            } else {
+                this.createModal({
+                    title: "远程推送失败",
+                    description: this.buildGitPushHint(errorType),
+                    bodyBuilder: ({ body }) => {
+                        const log = document.createElement("pre");
+                        log.className = "pp-modal__log";
+                        log.textContent = message;
+                        body.appendChild(log);
+                    },
+                });
+            }
+            throw err;
+        }
+    }
+
+    async syncRemoteThenPush(repoPath) {
+        const o = { cwd: repoPath };
+        const syncInfo = await this.getRepoSyncStatus(repoPath);
+        this.setProgress(86, "同步远程分支...");
+        await this.runCommand(`git pull --rebase ${syncInfo.remoteName} ${syncInfo.remoteBranch}`, o);
+        this.setProgress(92, "重新推送到远程...");
+        await this.runGitPushWithRetry(o);
+        await this.markRepoPushStatus(repoPath, "success", "", "");
+        return syncInfo;
+    }
+
+    async forcePushRepo(repoPath) {
+        const o = { cwd: repoPath };
+        this.setProgress(92, "强制覆盖远程...");
+        await this.runCommand("git push --force-with-lease", { ...o, timeoutMs: 30_000 });
+        await this.markRepoPushStatus(repoPath, "success", "", "");
+    }
+
+    async openRemoteAheadDialog(repoPath, onDone) {
+        return this.createModal({
+            title: "远程仓库已有新提交",
+            description: "先查看远程新增提交，再决定执行 rebase 同步还是强制覆盖远程。",
+            bodyBuilder: ({ body, close, closeBtn }) => {
+                const meta = document.createElement("div");
+                meta.className = "pp-modal__meta";
+                meta.innerHTML = `
+                    <div class="pp-modal__meta-label">仓库路径</div><div class="pp-modal__meta-value">${this.esc(repoPath || "-")}</div>
+                    <div class="pp-modal__meta-label">推荐动作</div><div class="pp-modal__meta-value">优先使用“同步远程后推送”保留远程提交</div>
+                `;
+                const actions = document.createElement("div");
+                actions.className = "pp-modal__actions";
+                const inspectBtn = document.createElement("button");
+                inspectBtn.type = "button";
+                inspectBtn.className = "pp-modal__btn";
+                inspectBtn.textContent = "查看远程新增提交";
+                const rebaseBtn = document.createElement("button");
+                rebaseBtn.type = "button";
+                rebaseBtn.className = "pp-modal__btn pp-modal__btn--primary";
+                rebaseBtn.textContent = "同步远程后推送";
+                const forceBtn = document.createElement("button");
+                forceBtn.type = "button";
+                forceBtn.className = "pp-modal__btn pp-modal__btn--danger";
+                forceBtn.textContent = "强制覆盖远程";
+                const output = document.createElement("pre");
+                output.className = "pp-modal__log";
+                output.textContent = "先点击“查看远程新增提交”，确认远程变化范围。";
+                const buttons = [inspectBtn, rebaseBtn, forceBtn, closeBtn];
+                inspectBtn.addEventListener("click", async () => {
+                    const original = inspectBtn.textContent;
+                    buttons.forEach((item) => { item.disabled = true; });
+                    inspectBtn.textContent = "检查中...";
+                    try {
+                        const syncInfo = await this.getRepoSyncStatus(repoPath);
+                        output.textContent = this.buildDiagnosticText({
+                            repoPath,
+                            errorType: "REMOTE_AHEAD",
+                            errorMessage: this.buildPushErrorLabel("REMOTE_AHEAD"),
+                            syncInfo,
+                        });
+                    } catch (err) {
+                        output.textContent = this.formatError(err);
+                    } finally {
+                        inspectBtn.textContent = original;
+                        buttons.forEach((item) => { item.disabled = false; });
+                    }
+                });
+                rebaseBtn.addEventListener("click", async () => {
+                    const original = rebaseBtn.textContent;
+                    buttons.forEach((item) => { item.disabled = true; });
+                    rebaseBtn.textContent = "同步中...";
+                    try {
+                        const syncInfo = await this.syncRemoteThenPush(repoPath);
+                        output.textContent = this.buildDiagnosticText({
+                            repoPath,
+                            errorType: "",
+                            errorMessage: "已完成 rebase 并推送成功。",
+                            syncInfo,
+                        });
+                        showMessage("已同步远程并推送成功", 4000, "info");
+                        if (typeof onDone === "function") onDone();
+                        setTimeout(close, 500);
+                    } catch (err) {
+                        const message = this.formatError(err);
+                        const errorType = this.classifyGitPushError(err) || (message.toLowerCase().includes("conflict") ? "REBASE_CONFLICT" : "");
+                        await this.markRepoPushStatus(repoPath, "failed", errorType, message);
+                        output.textContent = `${this.buildGitPushHint(errorType)}\n\n${message}`;
+                        showMessage(`同步失败: ${this.buildGitPushHint(errorType)}`, 7000, "error");
+                    } finally {
+                        rebaseBtn.textContent = original;
+                        buttons.forEach((item) => { item.disabled = false; });
+                    }
+                });
+                forceBtn.addEventListener("click", async () => {
+                    const original = forceBtn.textContent;
+                    buttons.forEach((item) => { item.disabled = true; });
+                    forceBtn.textContent = "覆盖中...";
+                    try {
+                        await this.forcePushRepo(repoPath);
+                        output.textContent = "已执行 git push --force-with-lease 并推送成功。";
+                        showMessage("已强制覆盖远程并推送成功", 4000, "info");
+                        if (typeof onDone === "function") onDone();
+                        setTimeout(close, 500);
+                    } catch (err) {
+                        const errorType = this.classifyGitPushError(err);
+                        const message = this.formatError(err);
+                        await this.markRepoPushStatus(repoPath, "failed", errorType, message);
+                        output.textContent = `${this.buildGitPushHint(errorType)}\n\n${message}`;
+                        showMessage(`强制推送失败: ${this.buildGitPushHint(errorType)}`, 7000, "error");
+                    } finally {
+                        forceBtn.textContent = original;
+                        buttons.forEach((item) => { item.disabled = false; });
+                    }
+                });
+                body.appendChild(meta);
+                body.appendChild(actions);
+                actions.appendChild(inspectBtn);
+                actions.appendChild(rebaseBtn);
+                actions.appendChild(forceBtn);
+                body.appendChild(output);
+            },
+        });
+    }
+
     // === Git push ===
     classifyGitPushError(err) {
+        if (err?.gitPushErrorType) return err.gitPushErrorType;
         const raw = `${err?.stderr || ""}\n${err?.stdout || ""}\n${err?.message || ""}`;
         const text = raw.toLowerCase();
         if (
@@ -2943,6 +3666,20 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         ) {
             return "STAGE_PATH_NOT_FOUND";
         }
+        if (
+            text.includes("no upstream configured") ||
+            text.includes("no upstream branch") ||
+            text.includes("no tracking information")
+        ) {
+            return "UPSTREAM_MISSING";
+        }
+        if (
+            text.includes("could not apply") ||
+            text.includes("resolve all conflicts manually") ||
+            text.includes("merge conflict")
+        ) {
+            return "REBASE_CONFLICT";
+        }
         return "";
     }
 
@@ -2965,6 +3702,12 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         }
         if (errorType === "STAGE_PATH_NOT_FOUND") {
             return "Git 暂存失败：发布目录在本地仓库中不存在，且未被 Git 跟踪。请检查分享记录中的目录名是否与实际目录一致，或重新发布该文档后再同步。";
+        }
+        if (errorType === "UPSTREAM_MISSING") {
+            return "当前分支没有配置上游分支。请先在仓库里设置 upstream，再重新推送。";
+        }
+        if (errorType === "REBASE_CONFLICT") {
+            return "同步远程时发生 rebase 冲突。请先解决冲突文件，再继续推送。";
         }
         return "Git 推送失败，本地提交已保留，请检查 Git 输出后重试。";
     }
@@ -3045,6 +3788,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
                         updatedAt: new Date().toISOString(),
                         pushStatus: "success",
                         lastPushErrorType: "",
+                        lastPushErrorMessage: "",
                     });
                     updated = true;
                 }
@@ -3064,6 +3808,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
                         updatedAt: new Date().toISOString(),
                         pushStatus: "failed",
                         lastPushErrorType: errorType,
+                        lastPushErrorMessage: this.formatError(err),
                     });
                 }
             }
@@ -3075,6 +3820,12 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         let committed = false;
         try {
             const o = { cwd: repoPath, includeSharedAssets: !!pushOptions.includeSharedAssets };
+            const precheck = await this.runPublishPrecheck(repoPath);
+            if (!precheck.ok) {
+                const error = new Error(precheck.issues.join("\n"));
+                error.gitPushErrorType = "UPSTREAM_MISSING";
+                throw error;
+            }
             await this.runCommand("git rev-parse --git-dir", o);
             this.setProgress(82, "Git 暂存变更...");
             await this.stagePublishedPaths(repoPath, scopeDir, o);
@@ -3109,6 +3860,22 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             const hint = this.buildGitPushHint(errorType);
             err.gitPushErrorType = errorType;
             showMessage(`${committed ? "Git 推送失败" : "Git 失败"}: ${hint}\n${m}`, 9000, "error");
+            if (errorType === "REMOTE_AHEAD" && repoPath) {
+                setTimeout(() => {
+                    this.openRemoteAheadDialog(repoPath).catch(() => {});
+                }, 120);
+            } else {
+                this.createModal({
+                    title: committed ? "Git 推送失败" : "Git 检查失败",
+                    description: hint,
+                    bodyBuilder: ({ body }) => {
+                        const log = document.createElement("pre");
+                        log.className = "pp-modal__log";
+                        log.textContent = m;
+                        body.appendChild(log);
+                    },
+                });
+            }
             err._pagesMessageShown = true;
             throw err;
         }
