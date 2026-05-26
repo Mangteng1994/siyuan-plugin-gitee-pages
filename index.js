@@ -3311,7 +3311,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     }
 
     async getRepoSyncStatus(repoPath) {
-        const o = { cwd: repoPath };
+        const o = { cwd: repoPath, timeoutMs: 30_000 };
         const upstream = await this.getUpstreamInfo(o);
         await this.runCommand(`git fetch --prune ${upstream.remoteName}`, o);
         const [{ stdout: remoteAheadStdout }, { stdout: localAheadStdout }, { stdout: remoteLogStdout }, { stdout: localLogStdout }] = await Promise.all([
