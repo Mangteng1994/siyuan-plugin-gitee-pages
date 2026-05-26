@@ -46,8 +46,8 @@ class PagesPublisher extends Plugin {
     defaultConfig() {
         return {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
-            github: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
+            gitee: { repoPath: "", pagesUrl: "" },
+            github: { repoPath: "", pagesUrl: "" },
             autoCommit: true,
             shares: [],
         };
@@ -61,12 +61,10 @@ class PagesPublisher extends Plugin {
             gitee: {
                 repoPath: d?.gitee?.repoPath || "",
                 pagesUrl: (d?.gitee?.pagesUrl || "").replace(/\/+$/, ""),
-                siteTitle: d?.gitee?.siteTitle || "Notes",
             },
             github: {
                 repoPath: d?.github?.repoPath || "",
                 pagesUrl: (d?.github?.pagesUrl || "").replace(/\/+$/, ""),
-                siteTitle: d?.github?.siteTitle || "Notes",
             },
             autoCommit: d.autoCommit !== false,
             shares,
@@ -194,8 +192,8 @@ class PagesPublisher extends Plugin {
     showFallbackPanel() {
         const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
-            github: { repoPath: "", pagesUrl: "", siteTitle: "Notes" },
+            gitee: { repoPath: "", pagesUrl: "" },
+            github: { repoPath: "", pagesUrl: "" },
             autoCommit: true,
             shares: [],
         });
@@ -1436,7 +1434,6 @@ class PagesPublisher extends Plugin {
             platform: p,
             repoPath: pc.repoPath || "",
             pagesUrl: (pc.pagesUrl || "").replace(/\/+$/, ""),
-            siteTitle: pc.siteTitle || "Notes",
             autoCommit: d.autoCommit !== false,
         };
     }
@@ -1532,7 +1529,6 @@ class PagesPublisher extends Plugin {
                         const pc = data[val] || {};
                         if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; }
                         if (refs.url)  { refs.url.value  = pc.pagesUrl || "";  refs.url.placeholder  = val==="github"?"https://yourname.github.io":"https://yourname.gitee.io"; }
-                        if (refs.title) refs.title.value = pc.siteTitle || "Notes";
                     });
                     return el;
                 };
@@ -1582,27 +1578,6 @@ class PagesPublisher extends Plugin {
                 refs.url = el;
                 return this.createCustomSettingField({
                     title: "Pages URL",
-                    actionElement: el,
-                });
-            },
-        });
-
-        // ── 站点标题 ──
-        this.setting.addItem({
-            title: "",
-            description: "",
-            className: "pp-field pp-custom-host pp-config-item pp-config-mid",
-            createActionElement: () => {
-                const el = document.createElement("input");
-                el.className = "pp-input";
-                const pc = data[plat] || {};
-                el.value = pc.siteTitle || "Notes";
-                el.placeholder = "My Notes";
-                el.spellcheck = false;
-                el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.siteTitle=el.value; that.persistConfig(data); });
-                refs.title = el;
-                return this.createCustomSettingField({
-                    title: "站点标题",
                     actionElement: el,
                 });
             },
@@ -3144,7 +3119,6 @@ ${this.getEnabledSnippetJS()}</body></html>`;
     // === Editorial 风格 HTML（纯系统字体，大陆秒开）===
     buildHTML(title, md, bc, cfg) {
         const body = this.md2html(md);
-        const st = this.esc(cfg.siteTitle || "Notes");
         const plat = cfg.platform === "github" ? "GitHub" : "Gitee";
         const ds = new Date().toLocaleDateString("zh-CN", { year:"numeric", month:"long", day:"numeric" });
 
@@ -3153,7 +3127,7 @@ ${this.getEnabledSnippetJS()}</body></html>`;
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>${this.esc(title)} — ${st}</title>
+<title>${this.esc(title)}</title>
 <style>
 :root {
   --bg:#faf8f5; --text:#2c2416; --muted:#8c7b6c; --faint:#b8a99a;
