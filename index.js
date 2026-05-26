@@ -49,6 +49,7 @@ class PagesPublisher extends Plugin {
             gitee: { repoPath: "", pagesUrl: "" },
             github: { repoPath: "", pagesUrl: "" },
             autoCommit: true,
+            gitProxy: "",
             shares: [],
         };
     }
@@ -1446,6 +1447,7 @@ class PagesPublisher extends Plugin {
             repoPath: pc.repoPath || "",
             pagesUrl: (pc.pagesUrl || "").replace(/\/+$/, ""),
             autoCommit: d.autoCommit !== false,
+            gitProxy: d.gitProxy || "",
         };
     }
 
@@ -1589,6 +1591,28 @@ class PagesPublisher extends Plugin {
                 refs.url = el;
                 return this.createCustomSettingField({
                     title: "Pages URL",
+                    actionElement: el,
+                });
+            },
+        });
+
+        // ── 代理配置 ──
+        this.setting.addItem({
+            title: "",
+            description: "",
+            className: "pp-field pp-custom-host pp-config-item pp-config-mid",
+            createActionElement: () => {
+                const el = document.createElement("input");
+                el.className = "pp-input";
+                el.value = data.gitProxy || "";
+                el.placeholder = "http://127.0.0.1:7890";
+                el.spellcheck = false;
+                el.addEventListener("input", () => {
+                    data.gitProxy = el.value.trim();
+                    that.persistConfig(data);
+                });
+                return this.createCustomSettingField({
+                    title: "Git 代理",
                     actionElement: el,
                 });
             },
@@ -3900,8 +3924,19 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         }
     }
 
+    getGitProxy() {
+        try {
+            return (this.data[STORAGE_KEY]?.gitProxy || "").trim();
+        } catch (e) { return ""; }
+    }
+
     runCommand(cmd, options) {
-        return execAsync(cmd, {
+        let finalCmd = cmd;
+        const proxy = this.getGitProxy();
+        if (proxy && /^git\s/.test(cmd)) {
+            finalCmd = `git -c http.proxy=${proxy} -c https.proxy=${proxy} ${cmd.slice(4)}`;
+        }
+        return execAsync(finalCmd, {
             cwd: options.cwd,
             windowsHide: true,
             maxBuffer: 10 * 1024 * 1024,
