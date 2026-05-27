@@ -218,12 +218,6 @@ class PagesPublisher extends Plugin {
         return path.join(workspaceDir, "data", "storage", "petal", PLUGIN_ID);
     }
 
-    getPluginInstallDir() {
-        const workspaceDir = this.getWorkspaceDir();
-        if (!workspaceDir) return "";
-        return path.join(workspaceDir, "data", "plugins", PLUGIN_ID);
-    }
-
     isSameOrInsidePath(targetPath, basePath) {
         if (!targetPath || !basePath) return false;
         try {
@@ -279,31 +273,7 @@ class PagesPublisher extends Plugin {
         }
     }
 
-    quoteCmdPath(targetPath) {
-        return `"${String(targetPath || "").replace(/"/g, '""')}"`;
-    }
-
-    quoteShPath(targetPath) {
-        return `'${String(targetPath || "").replace(/'/g, `'\\''`)}'`;
-    }
-
-    scheduleDelayedDirectoryRemoval(targetDir, label) {
-        if (!targetDir) return;
-        const resolvedTarget = path.resolve(targetDir);
-        let cmd = "";
-        if (process.platform === "win32") {
-            cmd = `cmd /c ping 127.0.0.1 -n 3 >nul && rmdir /s /q ${this.quoteCmdPath(resolvedTarget)}`;
-        } else {
-            cmd = `sh -c "sleep 2; rm -rf ${this.quoteShPath(resolvedTarget)}"`;
-        }
-        exec(cmd, (error) => {
-            if (error) {
-                console.warn(`[Pages Publisher] delayed ${label} cleanup failed:`, error);
-            }
-        });
-    }
-
-    cleanupOwnPluginDir(targetDir, expectedMarker, label, cfg, useDelayedRetry = false) {
+    cleanupOwnPluginDir(targetDir, expectedMarker, label, cfg) {
         if (!targetDir) {
             console.warn(`[Pages Publisher] skip ${label} cleanup: target path is empty`);
             return;
@@ -326,16 +296,6 @@ class PagesPublisher extends Plugin {
         } catch (e) {
             console.warn(`[Pages Publisher] ${label} cleanup failed:`, e);
         }
-
-        if (useDelayedRetry) {
-            try {
-                if (fs.existsSync(resolvedTarget)) {
-                    this.scheduleDelayedDirectoryRemoval(resolvedTarget, label);
-                }
-            } catch (e) {
-                console.warn(`[Pages Publisher] ${label} delayed cleanup scheduling failed:`, e);
-            }
-        }
     }
 
     async uninstall() {
@@ -350,17 +310,8 @@ class PagesPublisher extends Plugin {
         }
 
         try {
-            if (typeof this.removeData === "function" && PLUGIN_ID !== STORAGE_FILE) {
-                await this.removeData(PLUGIN_ID);
-            }
-        } catch (e) {
-            console.warn("[Pages Publisher] legacy removeData cleanup failed:", e);
-        }
-
-        try {
             if (this.data && typeof this.data === "object") {
                 delete this.data[STORAGE_KEY];
-                delete this.data[PLUGIN_ID];
             }
         } catch (e) {
             console.warn("[Pages Publisher] memory config cleanup failed:", e);
@@ -371,15 +322,6 @@ class PagesPublisher extends Plugin {
             path.join("data", "storage", "petal", PLUGIN_ID),
             "petal storage",
             cfg,
-            false,
-        );
-
-        this.cleanupOwnPluginDir(
-            this.getPluginInstallDir(),
-            path.join("data", "plugins", PLUGIN_ID),
-            "plugin install",
-            cfg,
-            true,
         );
     }
 

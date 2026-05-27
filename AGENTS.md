@@ -132,9 +132,8 @@ When changing publish logic, check both first-publish and re-publish paths.
 - Persistent plugin config stored with `saveData(STORAGE_FILE, ...)` must be cleaned up in `async uninstall()` via `removeData(STORAGE_FILE)`
 - Do not put config cleanup in `onunload()`, because disabling the plugin must not delete user configuration
 - `async uninstall()` must clean up `pages-pub-config` created by `saveData(STORAGE_FILE, ...)`
-- `async uninstall()` must also best-effort remove `data/storage/petal/siyuan-plugin-gitee-pages`
-- `async uninstall()` must also best-effort remove `data/plugins/siyuan-plugin-gitee-pages`
-- `data/plugins/siyuan-plugin-gitee-pages` is the plugin install directory; deletion may fail while runtime files are still in use, so use best-effort cleanup plus delayed retry
+- `async uninstall()` may best-effort remove `data/storage/petal/siyuan-plugin-gitee-pages` because it is plugin-owned persisted storage
+- Do not synchronously remove `data/plugins/siyuan-plugin-gitee-pages` from inside the plugin's own `uninstall()` hook; the plugin install directory is owned by SiYuan's community package remover
 - Never delete `gitee.repoPath`, `github.repoPath`, or any `shares[*].repoPath` target; those are real user repositories, not plugin-owned storage
 
 ## Localization Rules
@@ -161,7 +160,7 @@ Before considering a change done, verify as many of these as the task allows:
 - No obvious regression in publish, republish, or auto-commit flows
 - Uninstall removes `data/storage/petal/siyuan-plugin-gitee-pages/pages-pub-config`
 - Uninstall best-effort removes `data/storage/petal/siyuan-plugin-gitee-pages`
-- Uninstall best-effort removes or schedules delayed removal for `data/plugins/siyuan-plugin-gitee-pages`
+- `data/plugins/siyuan-plugin-gitee-pages` is removed by SiYuan's own community package uninstall flow, not by synchronous plugin self-deletion
 - Uninstall leaves user-configured Pages local repositories untouched
 
 ## Search Anchors
