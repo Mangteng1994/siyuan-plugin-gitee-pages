@@ -43,6 +43,11 @@ class PagesPublisher extends Plugin {
         this.treeMarkerTimer = null;
     }
 
+    t(key, fallback) {
+        const value = this.i18n && typeof this.i18n[key] === "string" ? this.i18n[key] : "";
+        return value || fallback;
+    }
+
     defaultConfig() {
         return {
             platform: "gitee",
@@ -149,7 +154,7 @@ class PagesPublisher extends Plugin {
         // 顶栏按钮 → 打开设置面板
         this.addTopBar({
             icon: "iconPagesPub",
-            title: "发布到 Pages",
+            title: this.t("publishToGitee", "发布到 Pages"),
             position: "right",
             callback: () => this.showPanel(),
         });
@@ -179,6 +184,16 @@ class PagesPublisher extends Plugin {
             this.treeMarkerTimer = null;
         }
         document.querySelectorAll(".pp-tree-share-icon").forEach((node) => node.remove());
+    }
+
+    async uninstall() {
+        try {
+            if (typeof this.removeData === "function") {
+                await this.removeData(STORAGE_FILE);
+            }
+        } catch (e) {
+            console.error("[Pages Publisher] uninstall cleanup failed:", e);
+        }
     }
 
     openSetting() {
@@ -211,7 +226,7 @@ class PagesPublisher extends Plugin {
                 el.className = "b3-text-field fn__block";
                 el.value = (data[plat] && data[plat].repoPath) || "";
                 el.placeholder = plat === "github" ? "C:\\Users\\xxx\\github-pages" : "C:\\Users\\xxx\\gitee-pages";
-                el.addEventListener("input", () => {
+                el.addEventListener("change", () => {
                     const key = currentPlatform();
                     const p = data[key] || (data[key] = {});
                     p.repoPath = el.value;
@@ -229,7 +244,7 @@ class PagesPublisher extends Plugin {
                 el.className = "b3-text-field fn__block";
                 el.value = (data[plat] && data[plat].pagesUrl) || "";
                 el.placeholder = plat === "github" ? "https://yourname.github.io" : "https://yourname.gitee.io";
-                el.addEventListener("input", () => {
+                el.addEventListener("change", () => {
                     const key = currentPlatform();
                     const p = data[key] || (data[key] = {});
                     p.pagesUrl = el.value.replace(/\/+$/, "");
@@ -255,7 +270,7 @@ class PagesPublisher extends Plugin {
             },
         });
 
-        setting.open(this.displayName || "Pages 发布");
+        setting.open(this.displayName || this.t("openGiteeSettings", "Pages 发布"));
     }
 
     markSettingDialog() {
@@ -1567,7 +1582,7 @@ class PagesPublisher extends Plugin {
                 el.value = pc.repoPath || "";
                 el.placeholder = plat === "github" ? "C:\\Users\\xxx\\github-pages" : "C:\\Users\\xxx\\gitee-pages";
                 el.spellcheck = false;
-                el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); });
+                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); });
                 refs.repo = el;
                 return this.createCustomSettingField({
                     title: "本地仓库路径",
@@ -1588,7 +1603,7 @@ class PagesPublisher extends Plugin {
                 el.value = pc.pagesUrl || "";
                 el.placeholder = plat === "github" ? "https://yourname.github.io" : "https://yourname.gitee.io";
                 el.spellcheck = false;
-                el.addEventListener("input", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); });
+                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); });
                 refs.url = el;
                 return this.createCustomSettingField({
                     title: "Pages URL",
@@ -1608,7 +1623,7 @@ class PagesPublisher extends Plugin {
                 el.value = data.gitProxy || "";
                 el.placeholder = "http://127.0.0.1:7890";
                 el.spellcheck = false;
-                el.addEventListener("input", () => {
+                el.addEventListener("change", () => {
                     data.gitProxy = el.value.trim();
                     that.persistConfig(data);
                 });
@@ -1674,7 +1689,7 @@ class PagesPublisher extends Plugin {
             },
         });
 
-        this.setting.open(this.displayName || "Pages 发布");
+        this.setting.open(this.displayName || this.t("openGiteeSettings", "Pages 发布"));
         requestAnimationFrame(() => {
             this.markSettingDialog();
         });
