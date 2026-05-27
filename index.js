@@ -68,6 +68,7 @@ class PagesPublisher extends Plugin {
                 pagesUrl: (d?.github?.pagesUrl || "").replace(/\/+$/, ""),
             },
             autoCommit: d.autoCommit !== false,
+            gitProxy: d.gitProxy || "",
             shares,
         };
     }
