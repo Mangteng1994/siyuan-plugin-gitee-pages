@@ -11,6 +11,7 @@ const path = require("path");
 
 const STORAGE_KEY = "pages-pub-config";
 const STORAGE_FILE = "pages-pub-config";
+const PLUGIN_ID = "siyuan-plugin-gitee-pages";
 const SHARED_ASSETS_DIR = "pages-pub-assets";
 const execAsync = promisify(exec);
 const KNOWN_PUSH_ERROR_TYPES = [
@@ -186,14 +187,200 @@ class PagesPublisher extends Plugin {
         document.querySelectorAll(".pp-tree-share-icon").forEach((node) => node.remove());
     }
 
+    getWorkspaceDir() {
+        const direct = globalThis.window?.siyuan?.config?.system?.workspaceDir;
+        if (direct && typeof direct === "string") {
+            try {
+                return path.resolve(direct);
+            } catch (e) { /* ignore */ }
+        }
+
+        for (const rawPath of [this.path, __dirname]) {
+            if (!rawPath || typeof rawPath !== "string") continue;
+            try {
+                const resolved = path.resolve(rawPath);
+                const stat = fs.existsSync(resolved) ? fs.statSync(resolved) : null;
+                const pluginDir = stat && stat.isDirectory() ? resolved : path.dirname(resolved);
+                const pluginsDir = path.dirname(pluginDir);
+                const dataDir = path.dirname(pluginsDir);
+                const workspaceDir = path.dirname(dataDir);
+                if (path.basename(pluginsDir) === "plugins" && path.basename(dataDir) === "data" && workspaceDir) {
+                    return path.resolve(workspaceDir);
+                }
+            } catch (e) { /* ignore */ }
+        }
+        return "";
+    }
+
+    getPluginPetalStorageDir() {
+        const workspaceDir = this.getWorkspaceDir();
+        if (!workspaceDir) return "";
+        return path.join(workspaceDir, "data", "storage", "petal", PLUGIN_ID);
+    }
+
+    getPluginInstallDir() {
+        const workspaceDir = this.getWorkspaceDir();
+        if (!workspaceDir) return "";
+        return path.join(workspaceDir, "data", "plugins", PLUGIN_ID);
+    }
+
+    isSameOrInsidePath(targetPath, basePath) {
+        if (!targetPath || !basePath) return false;
+        try {
+            const target = path.resolve(targetPath);
+            const base = path.resolve(basePath);
+            return target === base || target.startsWith(base + path.sep);
+        } catch (e) {
+            return false;
+        }
+    }
+
+    getProtectedRepoPaths(cfg) {
+        const result = [];
+        const pushRepo = (value) => {
+            if (!value || typeof value !== "string") return;
+            const trimmed = value.trim();
+            if (!trimmed) return;
+            try {
+                const resolved = path.resolve(trimmed);
+                if (!result.includes(resolved)) result.push(resolved);
+            } catch (e) { /* ignore */ }
+        };
+
+        pushRepo(cfg?.gitee?.repoPath);
+        pushRepo(cfg?.github?.repoPath);
+        if (Array.isArray(cfg?.shares)) {
+            for (const item of cfg.shares) pushRepo(item?.repoPath);
+        }
+        return result;
+    }
+
+    isProtectedRepoPath(targetDir, cfg) {
+        if (!targetDir) return false;
+        const resolvedTarget = path.resolve(targetDir);
+        return this.getProtectedRepoPaths(cfg).some((repoPath) => (
+            this.isSameOrInsidePath(resolvedTarget, repoPath) || this.isSameOrInsidePath(repoPath, resolvedTarget)
+        ));
+    }
+
+    isSafePluginCleanupTarget(targetDir, expectedMarker, cfg) {
+        const workspaceDir = this.getWorkspaceDir();
+        if (!workspaceDir || !targetDir || !expectedMarker) return false;
+        try {
+            const resolvedWorkspace = path.resolve(workspaceDir);
+            const resolvedTarget = path.resolve(targetDir);
+            const expectedRoot = path.resolve(resolvedWorkspace, expectedMarker);
+            if (!this.isSameOrInsidePath(resolvedTarget, resolvedWorkspace)) return false;
+            if (!(resolvedTarget === expectedRoot || resolvedTarget.startsWith(expectedRoot + path.sep))) return false;
+            if (this.isProtectedRepoPath(resolvedTarget, cfg)) return false;
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    quoteCmdPath(targetPath) {
+        return `"${String(targetPath || "").replace(/"/g, '""')}"`;
+    }
+
+    quoteShPath(targetPath) {
+        return `'${String(targetPath || "").replace(/'/g, `'\\''`)}'`;
+    }
+
+    scheduleDelayedDirectoryRemoval(targetDir, label) {
+        if (!targetDir) return;
+        const resolvedTarget = path.resolve(targetDir);
+        let cmd = "";
+        if (process.platform === "win32") {
+            cmd = `cmd /c ping 127.0.0.1 -n 3 >nul && rmdir /s /q ${this.quoteCmdPath(resolvedTarget)}`;
+        } else {
+            cmd = `sh -c "sleep 2; rm -rf ${this.quoteShPath(resolvedTarget)}"`;
+        }
+        exec(cmd, (error) => {
+            if (error) {
+                console.warn(`[Pages Publisher] delayed ${label} cleanup failed:`, error);
+            }
+        });
+    }
+
+    cleanupOwnPluginDir(targetDir, expectedMarker, label, cfg, useDelayedRetry = false) {
+        if (!targetDir) {
+            console.warn(`[Pages Publisher] skip ${label} cleanup: target path is empty`);
+            return;
+        }
+        const workspaceDir = this.getWorkspaceDir();
+        if (!workspaceDir) {
+            console.warn(`[Pages Publisher] skip ${label} cleanup: unable to resolve workspaceDir`);
+            return;
+        }
+        if (!this.isSafePluginCleanupTarget(targetDir, expectedMarker, cfg)) {
+            console.warn(`[Pages Publisher] skip ${label} cleanup: unsafe target ${targetDir}`);
+            return;
+        }
+
+        const resolvedTarget = path.resolve(targetDir);
+        try {
+            if (fs.existsSync(resolvedTarget)) {
+                fs.rmSync(resolvedTarget, { recursive: true, force: true });
+            }
+        } catch (e) {
+            console.warn(`[Pages Publisher] ${label} cleanup failed:`, e);
+        }
+
+        if (useDelayedRetry) {
+            try {
+                if (fs.existsSync(resolvedTarget)) {
+                    this.scheduleDelayedDirectoryRemoval(resolvedTarget, label);
+                }
+            } catch (e) {
+                console.warn(`[Pages Publisher] ${label} delayed cleanup scheduling failed:`, e);
+            }
+        }
+    }
+
     async uninstall() {
+        const cfg = this.data?.[STORAGE_KEY] || this.defaultConfig();
+
         try {
             if (typeof this.removeData === "function") {
                 await this.removeData(STORAGE_FILE);
             }
         } catch (e) {
-            console.error("[Pages Publisher] uninstall cleanup failed:", e);
+            console.warn("[Pages Publisher] removeData cleanup failed:", e);
         }
+
+        try {
+            if (typeof this.removeData === "function" && PLUGIN_ID !== STORAGE_FILE) {
+                await this.removeData(PLUGIN_ID);
+            }
+        } catch (e) {
+            console.warn("[Pages Publisher] legacy removeData cleanup failed:", e);
+        }
+
+        try {
+            if (this.data && typeof this.data === "object") {
+                delete this.data[STORAGE_KEY];
+                delete this.data[PLUGIN_ID];
+            }
+        } catch (e) {
+            console.warn("[Pages Publisher] memory config cleanup failed:", e);
+        }
+
+        this.cleanupOwnPluginDir(
+            this.getPluginPetalStorageDir(),
+            path.join("data", "storage", "petal", PLUGIN_ID),
+            "petal storage",
+            cfg,
+            false,
+        );
+
+        this.cleanupOwnPluginDir(
+            this.getPluginInstallDir(),
+            path.join("data", "plugins", PLUGIN_ID),
+            "plugin install",
+            cfg,
+            true,
+        );
     }
 
     openSetting() {

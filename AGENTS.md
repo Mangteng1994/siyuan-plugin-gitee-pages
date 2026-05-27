@@ -131,6 +131,11 @@ When changing publish logic, check both first-publish and re-publish paths.
 
 - Persistent plugin config stored with `saveData(STORAGE_FILE, ...)` must be cleaned up in `async uninstall()` via `removeData(STORAGE_FILE)`
 - Do not put config cleanup in `onunload()`, because disabling the plugin must not delete user configuration
+- `async uninstall()` must clean up `pages-pub-config` created by `saveData(STORAGE_FILE, ...)`
+- `async uninstall()` must also best-effort remove `data/storage/petal/siyuan-plugin-gitee-pages`
+- `async uninstall()` must also best-effort remove `data/plugins/siyuan-plugin-gitee-pages`
+- `data/plugins/siyuan-plugin-gitee-pages` is the plugin install directory; deletion may fail while runtime files are still in use, so use best-effort cleanup plus delayed retry
+- Never delete `gitee.repoPath`, `github.repoPath`, or any `shares[*].repoPath` target; those are real user repositories, not plugin-owned storage
 
 ## Localization Rules
 
@@ -154,6 +159,10 @@ Before considering a change done, verify as many of these as the task allows:
 - Git proxy still applies only to git commands
 - Generated asset paths still respect `SHARED_ASSETS_DIR`
 - No obvious regression in publish, republish, or auto-commit flows
+- Uninstall removes `data/storage/petal/siyuan-plugin-gitee-pages/pages-pub-config`
+- Uninstall best-effort removes `data/storage/petal/siyuan-plugin-gitee-pages`
+- Uninstall best-effort removes or schedules delayed removal for `data/plugins/siyuan-plugin-gitee-pages`
+- Uninstall leaves user-configured Pages local repositories untouched
 
 ## Search Anchors
 
