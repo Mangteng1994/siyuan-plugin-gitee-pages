@@ -22,11 +22,12 @@ jobs:
             icon.png \
             preview.png \
             README.md \
-            README_zh_CN.md \
-            plugin.json \
-            index.js \
-            i18n/ \
-            LICENSE
+          README_zh_CN.md \
+          plugin.json \
+          index.js \
+          index.css \
+          i18n/ \
+          LICENSE
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
