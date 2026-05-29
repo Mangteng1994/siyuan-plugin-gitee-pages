@@ -52,8 +52,8 @@ class PagesPublisher extends Plugin {
     defaultConfig() {
         return {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "" },
-            github: { repoPath: "", pagesUrl: "" },
+            gitee: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
+            github: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
             autoCommit: true,
             gitProxy: "",
             shares: [],
@@ -68,10 +68,14 @@ class PagesPublisher extends Plugin {
             gitee: {
                 repoPath: d?.gitee?.repoPath || "",
                 pagesUrl: (d?.gitee?.pagesUrl || "").replace(/\/+$/, ""),
+                repoHistory: Array.isArray(d?.gitee?.repoHistory) ? d.gitee.repoHistory.filter(h => h && typeof h === "object" && h.path) : [],
+                urlHistory: Array.isArray(d?.gitee?.urlHistory) ? d.gitee.urlHistory.filter(h => h && typeof h === "object" && h.url) : [],
             },
             github: {
                 repoPath: d?.github?.repoPath || "",
                 pagesUrl: (d?.github?.pagesUrl || "").replace(/\/+$/, ""),
+                repoHistory: Array.isArray(d?.github?.repoHistory) ? d.github.repoHistory.filter(h => h && typeof h === "object" && h.path) : [],
+                urlHistory: Array.isArray(d?.github?.urlHistory) ? d.github.urlHistory.filter(h => h && typeof h === "object" && h.url) : [],
             },
             autoCommit: d.autoCommit !== false,
             gitProxy: d.gitProxy || "",
@@ -140,6 +144,136 @@ class PagesPublisher extends Plugin {
             }
         } catch (e) { /* ignore */ }
         return normalized;
+    }
+
+    upsertRepoHistory(platform, repoPath) {
+        if (!repoPath || !platform) return;
+        const key = platform === "github" ? "github" : "gitee";
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
+        if (!Array.isArray(plat.repoHistory)) plat.repoHistory = [];
+        const exists = plat.repoHistory.find(h => h.path === repoPath);
+        if (!exists) {
+            plat.repoHistory.push({ path: repoPath, label: repoPath.split(/[\\\/]/).pop() || repoPath });
+            this.persistConfig(data);
+        }
+    }
+
+    upsertUrlHistory(platform, pagesUrl) {
+        if (!pagesUrl || !platform) return;
+        const key = platform === "github" ? "github" : "gitee";
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
+        if (!Array.isArray(plat.urlHistory)) plat.urlHistory = [];
+        const cleanUrl = pagesUrl.replace(/\/+$/, "");
+        const exists = plat.urlHistory.find(h => h.url === cleanUrl);
+        if (!exists) {
+            plat.urlHistory.push({ url: cleanUrl, label: cleanUrl.split("//").pop() || cleanUrl });
+            this.persistConfig(data);
+        }
+    }
+
+    removeFromRepoHistory(platform, repoPath) {
+        const key = platform === "github" ? "github" : "gitee";
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const plat = data[key];
+        if (!plat || !Array.isArray(plat.repoHistory)) return;
+        plat.repoHistory = plat.repoHistory.filter(h => h.path !== repoPath);
+        this.persistConfig(data);
+    }
+
+    removeFromUrlHistory(platform, pagesUrl) {
+        const key = platform === "github" ? "github" : "gitee";
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const plat = data[key];
+        if (!plat || !Array.isArray(plat.urlHistory)) return;
+        plat.urlHistory = plat.urlHistory.filter(h => h.url !== pagesUrl);
+        this.persistConfig(data);
+    }
+
+    _updateRepoDatalist(dl, history) {
+        if (!dl) return;
+        dl.innerHTML = "";
+        (history || []).forEach(h => { const opt = document.createElement("option"); opt.value = h.path; dl.appendChild(opt); });
+    }
+
+    _updateUrlDatalist(dl, history) {
+        if (!dl) return;
+        dl.innerHTML = "";
+        (history || []).forEach(h => { const opt = document.createElement("option"); opt.value = h.url; dl.appendChild(opt); });
+    }
+
+    _openHistoryModal(type, platform, inputEl, datalistEl, refs) {
+        const that = this;
+        const data = this.data[STORAGE_KEY] || this.defaultConfig();
+        const key = platform === "github" ? "github" : "gitee";
+        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
+        const history = type === "repo" ? (plat.repoHistory || []) : (plat.urlHistory || []);
+
+        this.createModal({
+            title: type === "repo" ? "仓库路径历史" : "Pages URL 历史",
+            description: "点击选择或删除历史记录",
+            bodyBuilder: ({ body, close }) => {
+                if (!history.length) {
+                    const empty = document.createElement("div");
+                    empty.className = "pp-modal__empty";
+                    empty.textContent = "暂无历史记录";
+                    body.appendChild(empty);
+                    return;
+                }
+                const list = document.createElement("div");
+                list.className = "pp-history-list";
+                history.forEach((item) => {
+                    const val = type === "repo" ? item.path : item.url;
+                    const row = document.createElement("div");
+                    row.className = "pp-history-item";
+                    const txt = document.createElement("span");
+                    txt.className = "pp-history-item__text";
+                    txt.textContent = val;
+                    txt.title = val;
+                    const selBtn = document.createElement("button");
+                    selBtn.type = "button";
+                    selBtn.className = "pp-history-item__select";
+                    selBtn.textContent = "选择";
+                    selBtn.addEventListener("click", () => {
+                        inputEl.value = val;
+                        if (type === "repo") {
+                            plat.repoPath = val;
+                        } else {
+                            plat.pagesUrl = val;
+                        }
+                        that.persistConfig(data);
+                        close();
+                    });
+                    const delBtn = document.createElement("button");
+                    delBtn.type = "button";
+                    delBtn.className = "pp-history-item__delete";
+                    delBtn.textContent = "删除";
+                    delBtn.addEventListener("click", () => {
+                        if (type === "repo") {
+                            that.removeFromRepoHistory(platform, val);
+                        } else {
+                            that.removeFromUrlHistory(platform, val);
+                        }
+                        const updated = type === "repo" ? plat.repoHistory : plat.urlHistory;
+                        if (type === "repo") that._updateRepoDatalist(refs.repoDatalist, updated);
+                        else that._updateUrlDatalist(refs.urlDatalist, updated);
+                        row.remove();
+                        if (!list.children.length) {
+                            const empty2 = document.createElement("div");
+                            empty2.className = "pp-modal__empty";
+                            empty2.textContent = "暂无历史记录";
+                            list.replaceWith(empty2);
+                        }
+                    });
+                    row.appendChild(txt);
+                    row.appendChild(selBtn);
+                    row.appendChild(delBtn);
+                    list.appendChild(row);
+                });
+                body.appendChild(list);
+            },
+        });
     }
 
     async onload() {
@@ -216,6 +350,59 @@ class PagesPublisher extends Plugin {
         const workspaceDir = this.getWorkspaceDir();
         if (!workspaceDir) return "";
         return path.join(workspaceDir, "data", "storage", "petal", PLUGIN_ID);
+    }
+
+    getConfigFilePath() {
+        const storageDir = this.getPluginPetalStorageDir();
+        if (!storageDir) return "";
+        return path.join(storageDir, STORAGE_FILE);
+    }
+
+    async ensureConfigFileExists() {
+        const filePath = this.getConfigFilePath();
+        if (!filePath) return false;
+        const dir = path.dirname(filePath);
+        try {
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            if (!fs.existsSync(filePath)) {
+                const cfg = this.defaultConfig();
+                const json = JSON.stringify(cfg, null, 2);
+                fs.writeFileSync(filePath, json, "utf-8");
+            }
+            return true;
+        } catch (e) {
+            console.error("[Pages Publisher] ensureConfigFileExists failed:", e);
+            return false;
+        }
+    }
+
+    async openConfigFile() {
+        const storageDir = this.getPluginPetalStorageDir();
+        if (!storageDir) {
+            showMessage("无法获取插件数据目录，请确认思源工作空间配置正常", 5000, "error");
+            return;
+        }
+
+        const ensured = await this.ensureConfigFileExists();
+        if (!ensured) {
+            showMessage("配置文件创建失败，请检查插件数据目录权限", 5000, "error");
+            return;
+        }
+
+        const dirQuoted = `"${storageDir.replace(/"/g, '\"')}"`;
+        let cmd = "";
+        if (process.platform === "win32") cmd = `cmd /c start "" ${dirQuoted}`;
+        else if (process.platform === "darwin") cmd = `open ${dirQuoted}`;
+        else cmd = `xdg-open ${dirQuoted}`;
+
+        try {
+            await this.runCommand(cmd, { cwd: storageDir });
+        } catch (err) {
+            console.error("[Pages Publisher] openConfigFile failed:", err);
+            showMessage("配置文件目录打开失败，请检查插件数据目录是否存在", 5000, "error");
+        }
     }
 
     isSameOrInsidePath(targetPath, basePath) {
@@ -338,8 +525,8 @@ class PagesPublisher extends Plugin {
     showFallbackPanel() {
         const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "" },
-            github: { repoPath: "", pagesUrl: "" },
+            gitee: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
+            github: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
             autoCommit: true,
             shares: [],
         });
@@ -900,6 +1087,7 @@ class PagesPublisher extends Plugin {
         data.shares = nextShares;
         await this.persistConfigAndWait(data);
         this.scheduleRefreshTreeShareMarkers();
+        this.refreshShareListIfVisible();
     }
 
     // 显示设置+发布面板
@@ -930,8 +1118,8 @@ class PagesPublisher extends Plugin {
                         cards.querySelectorAll(".pp-platform-card").forEach(c => c.classList.remove("active"));
                         el.classList.add("active");
                         const pc = data[val] || {};
-                        if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; }
-                        if (refs.url)  { refs.url.value  = pc.pagesUrl || "";  refs.url.placeholder  = val==="github"?"https://yourname.github.io":"https://yourname.gitee.io"; }
+                        if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; that._updateRepoDatalist(refs.repoDatalist, pc.repoHistory || []); }
+                        if (refs.url)  { refs.url.value  = pc.pagesUrl || "";  refs.url.placeholder  = val==="github"?"https://yourname.github.io":"https://yourname.gitee.io"; that._updateUrlDatalist(refs.urlDatalist, pc.urlHistory || []); }
                     });
                     return el;
                 };
@@ -950,17 +1138,33 @@ class PagesPublisher extends Plugin {
             description: "",
             className: "pp-field pp-custom-host pp-config-item pp-config-start",
             createActionElement: () => {
+                const wrap = document.createElement("div");
+                wrap.className = "pp-input-history-wrap";
                 const el = document.createElement("input");
-                el.className = "pp-input";
+                el.className = "pp-input pp-input--with-history";
+                el.setAttribute("list", "pp-repo-datalist");
                 const pc = data[plat] || {};
                 el.value = pc.repoPath || "";
                 el.placeholder = plat === "github" ? "C:\\Users\\xxx\\github-pages" : "C:\\Users\\xxx\\gitee-pages";
                 el.spellcheck = false;
-                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); });
+                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); if(el.value) that.upsertRepoHistory(key, el.value); });
+                const dl = document.createElement("datalist");
+                dl.id = "pp-repo-datalist";
+                (pc.repoHistory || []).forEach(h => { const opt=document.createElement("option"); opt.value=h.path; dl.appendChild(opt); });
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "pp-input-history-btn";
+                btn.textContent = "历史";
+                btn.title = "管理仓库历史路径";
+                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that._openHistoryModal("repo", currentPlatform(), el, dl, refs); });
+                wrap.appendChild(el);
+                wrap.appendChild(dl);
+                wrap.appendChild(btn);
                 refs.repo = el;
+                refs.repoDatalist = dl;
                 return this.createCustomSettingField({
                     title: "本地仓库路径",
-                    actionElement: el,
+                    actionElement: wrap,
                 });
             },
         });
@@ -971,17 +1175,33 @@ class PagesPublisher extends Plugin {
             description: "",
             className: "pp-field pp-custom-host pp-config-item pp-config-mid",
             createActionElement: () => {
+                const wrap = document.createElement("div");
+                wrap.className = "pp-input-history-wrap";
                 const el = document.createElement("input");
-                el.className = "pp-input";
+                el.className = "pp-input pp-input--with-history";
+                el.setAttribute("list", "pp-url-datalist");
                 const pc = data[plat] || {};
                 el.value = pc.pagesUrl || "";
                 el.placeholder = plat === "github" ? "https://yourname.github.io" : "https://yourname.gitee.io";
                 el.spellcheck = false;
-                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); });
+                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); if(el.value) that.upsertUrlHistory(key, el.value); });
+                const dl = document.createElement("datalist");
+                dl.id = "pp-url-datalist";
+                (pc.urlHistory || []).forEach(h => { const opt=document.createElement("option"); opt.value=h.url; dl.appendChild(opt); });
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "pp-input-history-btn";
+                btn.textContent = "历史";
+                btn.title = "管理 Pages URL 历史";
+                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that._openHistoryModal("url", currentPlatform(), el, dl, refs); });
+                wrap.appendChild(el);
+                wrap.appendChild(dl);
+                wrap.appendChild(btn);
                 refs.url = el;
+                refs.urlDatalist = dl;
                 return this.createCustomSettingField({
                     title: "Pages URL",
-                    actionElement: el,
+                    actionElement: wrap,
                 });
             },
         });
@@ -1018,6 +1238,37 @@ class PagesPublisher extends Plugin {
                     title: "自动 Git 推送",
                     actionElement: this.createAutoCommitSwitch(data),
                     actionClassName: "pp-setting-control--switch",
+                });
+            },
+        });
+
+        // ── 打开配置文件 ──
+        this.setting.addItem({
+            title: "",
+            description: "",
+            className: "pp-field pp-custom-host pp-config-item pp-config-mid",
+            createActionElement: () => {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "pp-input-history-btn";
+                btn.textContent = "打开配置目录";
+                btn.title = "打开插件数据目录，配置文件: pages-pub-config";
+                btn.style.width = "100%";
+                btn.style.justifyContent = "center";
+                btn.addEventListener("click", async () => {
+                    const original = btn.textContent;
+                    btn.textContent = "打开中...";
+                    btn.disabled = true;
+                    try {
+                        await that.openConfigFile();
+                    } finally {
+                        btn.textContent = original;
+                        btn.disabled = false;
+                    }
+                });
+                return this.createCustomSettingField({
+                    title: "配置文件",
+                    actionElement: btn,
                 });
             },
         });
@@ -1099,7 +1350,19 @@ class PagesPublisher extends Plugin {
         const refreshBtn = document.createElement("button");
         refreshBtn.className = "pp-share-refresh";
         refreshBtn.textContent = "刷新";
-        refreshBtn.addEventListener("click", () => this.renderShareList(wrap));
+        refreshBtn.addEventListener("click", async () => {
+            refreshBtn.textContent = "刷新中...";
+            refreshBtn.disabled = true;
+            try {
+                const freshConfig = await that.loadConfig();
+                that.data[STORAGE_KEY] = freshConfig;
+                that.renderShareList(wrap);
+                that.scheduleRefreshTreeShareMarkers();
+            } finally {
+                refreshBtn.textContent = "刷新";
+                refreshBtn.disabled = false;
+            }
+        });
 
         head.appendChild(titleWrap);
         toolbar.appendChild(searchInput);
@@ -1142,6 +1405,89 @@ class PagesPublisher extends Plugin {
         list.className = "pp-share-list";
         records.forEach((record) => list.appendChild(this.createShareCard(record, container)));
         body.appendChild(list);
+    }
+
+    async syncLocalShareRecords(repoPath) {
+        if (!repoPath || !fs.existsSync(repoPath)) return { added: 0, removed: 0, markedMissing: 0 };
+
+        const cfg = this.data[STORAGE_KEY] || this.defaultConfig();
+        const records = this.getShareRecords();
+        const repoRecords = records.filter(r => {
+            try { return path.resolve(r.repoPath) === path.resolve(repoPath); } catch (e) { return false; }
+        });
+
+        // Determine platform for this repoPath
+        let platform = cfg.platform || "gitee";
+        try {
+            if (cfg.github.repoPath && path.resolve(cfg.github.repoPath) === path.resolve(repoPath)) platform = "github";
+            else if (cfg.gitee.repoPath && path.resolve(cfg.gitee.repoPath) === path.resolve(repoPath)) platform = "gitee";
+        } catch (e) { /* use default platform */ }
+
+        const cfgForPlat = cfg[platform] || {};
+        const pagesUrl = cfgForPlat.pagesUrl || "";
+
+        let added = 0, removed = 0, markedMissing = 0;
+
+        // Scan local repo for published directories (those with index.html)
+        let topEntries = [];
+        try {
+            topEntries = fs.readdirSync(repoPath, { withFileTypes: true });
+        } catch (e) {
+            return { added: 0, removed: 0, markedMissing: 0 };
+        }
+
+        const publishedDirs = [];
+        for (const entry of topEntries) {
+            if (!entry.isDirectory()) continue;
+            if (entry.name === SHARED_ASSETS_DIR) continue;
+            if (entry.name.startsWith(".")) continue;
+            try {
+                if (fs.existsSync(path.join(repoPath, entry.name, "index.html"))) {
+                    publishedDirs.push(entry.name);
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // 1. Published dirs without share record → auto-add
+        const recordSlugs = new Set(repoRecords.map(r => r.slug).filter(Boolean));
+        for (const slug of publishedDirs) {
+            if (!recordSlugs.has(slug)) {
+                const url = this.buildShareUrl(pagesUrl, slug);
+                const now = new Date().toISOString();
+                const newRecord = {
+                    id: `${platform}-auto-${slug}-${Date.now()}`,
+                    docId: `auto-${slug}`,
+                    title: slug,
+                    platform,
+                    slug,
+                    url,
+                    repoPath,
+                    createdAt: now,
+                    updatedAt: now,
+                    autoCommit: cfg.autoCommit !== false,
+                    publishStatus: "local_saved",
+                    pushStatus: "success",
+                    lastPushErrorType: "",
+                    lastPushErrorMessage: "",
+                };
+                await this.upsertShareRecord(newRecord);
+                added++;
+            }
+        }
+
+        // 2. Share records without local directory → mark as missing or remove
+        const publishedDirSet = new Set(publishedDirs);
+        for (const record of repoRecords) {
+            if (!record.slug) continue;
+            if (!publishedDirSet.has(record.slug)) {
+                // Directory doesn't exist locally - remove the share record
+                await this.removeShareRecord(record.id);
+                removed++;
+            }
+        }
+
+        this.refreshShareListIfVisible();
+        return { added, removed, markedMissing };
     }
 
     refreshShareListIfVisible() {
@@ -1346,6 +1692,7 @@ class PagesPublisher extends Plugin {
                 lastPushErrorType: "",
                 lastPushErrorMessage: "",
             });
+            try { await this.syncLocalShareRecords(repoPath); } catch (syncErr) { /* best effort */ }
             showMessage("手动推送成功", 3000, "info");
         } catch (err) {
             const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
@@ -1656,6 +2003,7 @@ class PagesPublisher extends Plugin {
             });
             Object.assign(record, successRecord || {});
             this.refreshShareListIfVisible();
+            try { await this.syncLocalShareRecords(repoPath); } catch (syncErr) { /* best effort */ }
             showMessage(`远程推送成功: ${record.url || slug}`, 4000, "info");
         } catch (err) {
             const errorType = err?.gitPushErrorType || "";
@@ -1717,16 +2065,19 @@ class PagesPublisher extends Plugin {
                 } catch (err) {
                     const msg = this.formatError(err);
                     console.error("[siyuan-plugin-gitee-pages] deleteShare git sync failed:", err);
+                    this.refreshShareListIfVisible();
                     this.finishProgress("本地目录已删除但远端同步失败", true);
                     showMessage(`本地目录已删除但远端同步失败: ${msg}`, 7000, "error");
                     return;
                 }
                 await this.removeShareRecord(record.id);
+                this.refreshShareListIfVisible();
                 this.finishProgress(`删除成功: ${scopeDir}`);
                 showMessage("分享已删除并同步到远程仓库", 4000, "info");
             });
         } catch (err) {
             console.error("[siyuan-plugin-gitee-pages] deleteShare failed:", err);
+            this.refreshShareListIfVisible();
             if (!err?._pagesMessageShown) {
                 showMessage(`删除失败: ${this.formatError(err)}`, 5000, "error");
             }
@@ -2371,16 +2722,22 @@ document.querySelectorAll(".protyle-action__copy").forEach((item) => {
   });
 });
 function initPagesPubToc() {
-  const preview = document.getElementById("preview");
-  const toc = document.getElementById("pages-pub-toc");
-  const list = document.getElementById("pages-pub-toc-list");
-  const toggle = document.getElementById("pages-pub-toc-toggle");
+  var preview = document.getElementById("preview");
+  var toc = document.getElementById("pages-pub-toc");
+  var list = document.getElementById("pages-pub-toc-list");
+  var toggle = document.getElementById("pages-pub-toc-toggle");
   if (!preview || !toc || !list) return;
-  const links = Array.from(list.querySelectorAll(".pages-pub-toc-link"));
-  const headings = links.map((link) => {
-    const targetId = decodeURIComponent(link.dataset.targetId || (link.getAttribute("href") || "").replace(/^#/, ""));
-    const node = document.getElementById(targetId);
-    return node ? { node, id: targetId, link } : null;
+  var links = Array.from(list.querySelectorAll(".pages-pub-toc-link"));
+  var headings = links.map(function(link) {
+    var href = link.getAttribute("href") || "";
+    var targetId = decodeURIComponent(link.dataset.targetId || href.replace(/^#/, ""));
+    var node = document.getElementById(targetId);
+    if (!node) {
+      // Try finding by the href fragment without encoding
+      var rawId = href.replace(/^#/, "");
+      node = document.getElementById(rawId);
+    }
+    return node ? { node: node, id: node.id || targetId, link: link } : null;
   }).filter(Boolean);
   if (!headings.length) {
     toc.classList.add("pages-pub-toc--empty");
@@ -2392,18 +2749,70 @@ function initPagesPubToc() {
   }
   toc.classList.remove("pages-pub-toc--empty");
   document.body.classList.remove("pages-pub-no-toc");
-  let activeId = "";
-  headings.forEach((item) => {
-    const { id, link } = item;
-    link.addEventListener("click", (event) => {
+
+  // Initialize toggle state based on screen width
+  var isMobile = window.innerWidth <= 1100;
+  if (toggle) {
+    if (isMobile) {
+      toggle.textContent = "展开";
+      toggle.setAttribute("aria-expanded", "false");
+    } else {
+      toc.classList.add("is-open");
+      toggle.textContent = "收起";
+      toggle.setAttribute("aria-expanded", "true");
+    }
+  } else if (!isMobile) {
+    toc.classList.add("is-open");
+  }
+
+  var activeId = "";
+
+  function setActive(id) {
+    if (!id || id === activeId) return;
+    activeId = id;
+    headings.forEach(function(item) {
+      item.link.classList.toggle("active", item.id === id);
+    });
+  }
+
+  function findTopmostHeading() {
+    var best = null;
+    // Find the heading whose top is closest to (but not past) the 80px line from top
+    for (var i = 0; i < headings.length; i++) {
+      var rect = headings[i].node.getBoundingClientRect();
+      if (rect.top <= 100) {
+        best = headings[i];
+      } else {
+        break;
+      }
+    }
+    return best || headings[0];
+  }
+
+  var scrollTicking = false;
+  function onScroll() {
+    if (!scrollTicking) {
+      requestAnimationFrame(function() {
+        var topHeading = findTopmostHeading();
+        if (topHeading && topHeading.node.id) setActive(topHeading.node.id);
+        scrollTicking = false;
+      });
+      scrollTicking = true;
+    }
+  }
+
+  // Click handlers: smooth scroll to heading
+  headings.forEach(function(item) {
+    item.link.addEventListener("click", function(event) {
       event.preventDefault();
-      const target = document.getElementById(id);
+      var target = document.getElementById(item.id);
       if (!target) return;
-      const top = target.getBoundingClientRect().top + window.scrollY - 24;
+      var top = target.getBoundingClientRect().top + window.pageYOffset - 80;
       window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
       if (history && typeof history.replaceState === "function") {
-        history.replaceState(null, "", "#" + encodeURIComponent(id));
+        history.replaceState(null, "", "#" + encodeURIComponent(item.id));
       }
+      // Close TOC on mobile after clicking
       if (window.innerWidth <= 1100) {
         toc.classList.remove("is-open");
         if (toggle) {
@@ -2414,50 +2823,43 @@ function initPagesPubToc() {
     });
   });
 
-  function setActive(id) {
-    if (!id || id === activeId) return;
-    activeId = id;
-    headings.forEach((item) => {
-      item.link.classList.toggle("active", item.id === id);
-    });
-  }
-
-  function syncActiveHeading() {
-    let current = headings[0] || null;
-    for (const item of headings) {
-      const top = item.node.getBoundingClientRect().top;
-      if (top <= 80) {
-        current = item;
-      } else {
-        break;
-      }
-    }
-    if (current && current.node.id) setActive(current.node.id);
-  }
-
+  // Toggle button
   if (toggle) {
-    toggle.addEventListener("click", () => {
-      const isOpen = toc.classList.toggle("is-open");
+    toggle.addEventListener("click", function() {
+      var isOpen = toc.classList.toggle("is-open");
       toggle.textContent = isOpen ? "收起" : "展开";
       toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
     });
   }
 
+  // IntersectionObserver for active heading tracking
   if ("IntersectionObserver" in window) {
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries
-        .filter((entry) => entry.isIntersecting)
-        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
-      if (visible && visible.target && visible.target.id) {
-        setActive(visible.target.id);
+    var observer = new IntersectionObserver(function(entries) {
+      // Find the topmost heading that is currently intersecting
+      var intersecting = [];
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) {
+          intersecting.push(entries[i]);
+        }
       }
-    }, { rootMargin: "-10% 0px -75% 0px", threshold: [0, 1] });
-    headings.forEach((item) => observer.observe(item.node));
-  } else {
-    window.addEventListener("scroll", syncActiveHeading, { passive: true });
+      if (intersecting.length > 0) {
+        intersecting.sort(function(a, b) {
+          return a.boundingClientRect.top - b.boundingClientRect.top;
+        });
+        var topEntry = intersecting[0];
+        if (topEntry.target && topEntry.target.id) {
+          setActive(topEntry.target.id);
+        }
+      }
+    }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
+    headings.forEach(function(item) { observer.observe(item.node); });
   }
-  if (headings[0] && headings[0].node.id) setActive(headings[0].node.id);
-  syncActiveHeading();
+  // Fallback: scroll-based tracking
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  // Initial highlight
+  var initial = findTopmostHeading();
+  if (initial && initial.node.id) setActive(initial.node.id);
 }
 requestAnimationFrame(() => {
   setTimeout(initPagesPubToc, 0);
@@ -2884,12 +3286,51 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
 
     async syncRemoteThenPush(repoPath) {
         const o = { cwd: repoPath };
+
+        // 1. Check workspace cleanliness before pulling
+        let workspaceClean = true;
+        try {
+            await this.runCommand("git diff --quiet", o);
+            await this.runCommand("git diff --cached --quiet", o);
+        } catch (e) {
+            workspaceClean = false;
+        }
+        if (!workspaceClean) {
+            const err = new Error("工作区有未提交的修改，请先提交或暂存后再同步远程。");
+            err.gitPushErrorType = "REBASE_CONFLICT";
+            throw err;
+        }
+
         const syncInfo = await this.getRepoSyncStatus(repoPath);
         this.setProgress(86, "同步远程分支...");
-        await this.runCommand(`git pull --rebase ${syncInfo.remoteName} ${syncInfo.remoteBranch}`, o);
+
+        // 2. Try pull --rebase with conflict detection
+        try {
+            await this.runCommand(`git pull --rebase ${syncInfo.remoteName} ${syncInfo.remoteBranch}`, o);
+        } catch (pullErr) {
+            const msg = this.formatError(pullErr);
+            if (/conflict|CONFLICT|would be overwritten|merge conflict/i.test(msg)) {
+                // Abort the rebase
+                try { await this.runCommand("git rebase --abort", o); } catch (abortErr) { /* best effort */ }
+                const err = new Error("同步远程时发生冲突，已中止 rebase。请手动解决冲突后重试。");
+                err.gitPushErrorType = "REBASE_CONFLICT";
+                await this.markRepoPushStatus(repoPath, "failed", "REBASE_CONFLICT", msg);
+                throw err;
+            }
+            throw pullErr;
+        }
+
         this.setProgress(92, "重新推送到远程...");
         await this.runGitPushWithRetry(o);
         await this.markRepoPushStatus(repoPath, "success", "", "");
+
+        // 3. Reconcile share records with local files
+        try {
+            await this.syncLocalShareRecords(repoPath);
+        } catch (syncErr) {
+            console.error("[Pages Publisher] syncLocalShareRecords after syncRemoteThenPush failed:", syncErr);
+        }
+
         return syncInfo;
     }
 
