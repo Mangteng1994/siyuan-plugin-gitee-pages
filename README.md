@@ -37,11 +37,14 @@ Both platforms can be configured simultaneously and switched at any time.
 
 - Dual platform: Gitee + GitHub, switch anytime
 - SiYuan native rendering via Protyle engine — what you see is what you get
-- Auto-generated sidebar TOC with scroll-aware highlighting
+- Auto-generated sidebar TOC with scroll-aware highlighting, mobile collapsible
 - Full Markdown: headings, lists, code blocks, tables, blockquotes, images, links
 - Auto-attaches enabled CSS/JS snippets and Petals
 - Auto Git: add → commit → push
-- Publish history with re-publish support
+- Publish history with re-publish, delete, manual push, and push status tracking
+- Multi-repo / multi-URL history management with quick switch
+- Open config directory for manual editing of `pages-pub-config`
+- Share list auto-sync with local repo files after pull/push
 
 ## Output Structure
 
@@ -70,6 +73,18 @@ repo root/
 **Images not showing**: Ensure images are SiYuan resource files, not local absolute paths.
 
 **Style mismatch**: Published appearance depends on the active SiYuan theme. Re-publish after switching themes.
+
+## Changelog
+
+### v1.0.5
+
+- **Multi-repo / multi-URL history**: Each platform saves a history of repo paths and Pages URLs. Switch or manage them in settings.
+- **Open config directory**: Button in settings to open the plugin data directory for manual `pages-pub-config` editing.
+- **Share list auto-sync**: After sync/pull/push, automatically scan local repo directories and reconcile with share records.
+- **`syncRemoteThenPush` improvements**: Checks workspace cleanliness before pull; detects and aborts rebase conflicts with clear prompts.
+- **Delete share refresh fix**: Share list now refreshes immediately after deleting a record.
+- **TOC fixes**: Correct scroll-to-heading behavior, proper active heading highlight, mobile collapse with correct `aria-expanded` sync.
+- **Refresh button**: Reloads `pages-pub-config` from disk and syncs document tree share markers.
 
 ## License
 
