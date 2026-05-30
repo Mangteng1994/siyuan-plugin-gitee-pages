@@ -39,6 +39,7 @@ class PagesPublisher extends Plugin {
         this.openSetting = this.openSetting.bind(this);
         this.publishTask = null;
         this.progressEl = null;
+        this.progressTimer = null;
         this.shareListContainer = null;
         this.treeMarkerObserver = null;
         this.treeMarkerTimer = null;
@@ -52,8 +53,8 @@ class PagesPublisher extends Plugin {
     defaultConfig() {
         return {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
-            github: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
+            gitee: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
+            github: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
             autoCommit: true,
             gitProxy: "",
             shares: [],
@@ -63,24 +64,97 @@ class PagesPublisher extends Plugin {
     normalizeConfig(cfg) {
         const d = cfg || {};
         const shares = Array.isArray(d.shares) ? d.shares.map((item) => this.normalizeShareRecord(item)).filter(Boolean) : [];
+        const normalizePlatform = (item = {}) => ({
+            repoPath: String(item?.repoPath || ""),
+            pagesUrl: String(item?.pagesUrl || "").trim().replace(/\/+$/, ""),
+            repoPathHistory: this.normalizeHistoryItems([
+                ...(Array.isArray(item?.repoPathHistory) ? item.repoPathHistory : []),
+                ...(Array.isArray(item?.repoHistory) ? item.repoHistory : []),
+            ], "repoPath"),
+            pagesUrlHistory: this.normalizeHistoryItems([
+                ...(Array.isArray(item?.pagesUrlHistory) ? item.pagesUrlHistory : []),
+                ...(Array.isArray(item?.urlHistory) ? item.urlHistory : []),
+            ], "pagesUrl"),
+        });
         return {
             platform: d.platform === "github" ? "github" : "gitee",
-            gitee: {
-                repoPath: d?.gitee?.repoPath || "",
-                pagesUrl: (d?.gitee?.pagesUrl || "").replace(/\/+$/, ""),
-                repoHistory: Array.isArray(d?.gitee?.repoHistory) ? d.gitee.repoHistory.filter(h => h && typeof h === "object" && h.path) : [],
-                urlHistory: Array.isArray(d?.gitee?.urlHistory) ? d.gitee.urlHistory.filter(h => h && typeof h === "object" && h.url) : [],
-            },
-            github: {
-                repoPath: d?.github?.repoPath || "",
-                pagesUrl: (d?.github?.pagesUrl || "").replace(/\/+$/, ""),
-                repoHistory: Array.isArray(d?.github?.repoHistory) ? d.github.repoHistory.filter(h => h && typeof h === "object" && h.path) : [],
-                urlHistory: Array.isArray(d?.github?.urlHistory) ? d.github.urlHistory.filter(h => h && typeof h === "object" && h.url) : [],
-            },
+            gitee: normalizePlatform(d.gitee),
+            github: normalizePlatform(d.github),
             autoCommit: d.autoCommit !== false,
             gitProxy: d.gitProxy || "",
             shares,
         };
+    }
+
+    makeHistoryId(value) {
+        const text = String(value || "");
+        let hash = 5381;
+        for (let i = 0; i < text.length; i += 1) {
+            hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
+        }
+        return `hist-${(hash >>> 0).toString(36)}`;
+    }
+
+    parseTags(input) {
+        const raw = Array.isArray(input) ? input.join("\n") : String(input || "");
+        const seen = new Set();
+        const tags = [];
+        raw.split(/[,\uFF0C\u3001\s]+/).forEach((part) => {
+            const tag = String(part || "").trim();
+            if (!tag || seen.has(tag)) return;
+            seen.add(tag);
+            tags.push(tag);
+        });
+        return tags;
+    }
+
+    normalizeHistoryItems(items, type) {
+        const list = Array.isArray(items) ? items : [];
+        const byValue = new Map();
+        const now = new Date().toISOString();
+        const cleanValue = (value) => {
+            const text = String(value || "").trim();
+            return type === "pagesUrl" ? text.replace(/\/+$/, "") : text;
+        };
+        const pickTime = (value) => {
+            const text = String(value || "").trim();
+            return text || now;
+        };
+        list.forEach((item) => {
+            let value = "";
+            if (typeof item === "string") {
+                value = item;
+            } else if (item && typeof item === "object") {
+                value = item.value
+                    || (type === "repoPath" ? (item.path || item.repoPath) : (item.url || item.pagesUrl))
+                    || item.path
+                    || item.url
+                    || "";
+            }
+            value = cleanValue(value);
+            if (!value) return;
+            const source = item && typeof item === "object" ? item : {};
+            const existing = byValue.get(value);
+            const tags = this.parseTags(source.tags || []);
+            if (existing) {
+                existing.tags = this.parseTags([...existing.tags, ...tags]);
+                existing.updatedAt = pickTime(source.updatedAt || existing.updatedAt);
+                existing.lastUsedAt = pickTime(source.lastUsedAt || source.updatedAt || existing.lastUsedAt);
+                return;
+            }
+            const createdAt = pickTime(source.createdAt || source.updatedAt || source.lastUsedAt);
+            const updatedAt = pickTime(source.updatedAt || createdAt);
+            const lastUsedAt = pickTime(source.lastUsedAt || updatedAt);
+            byValue.set(value, {
+                id: String(source.id || this.makeHistoryId(value)),
+                value,
+                tags,
+                createdAt,
+                updatedAt,
+                lastUsedAt,
+            });
+        });
+        return Array.from(byValue.values()).sort((a, b) => String(b.lastUsedAt || "").localeCompare(String(a.lastUsedAt || "")));
     }
 
     normalizeShareRecord(record) {
@@ -146,132 +220,335 @@ class PagesPublisher extends Plugin {
         return normalized;
     }
 
-    upsertRepoHistory(platform, repoPath) {
-        if (!repoPath || !platform) return;
-        const key = platform === "github" ? "github" : "gitee";
+    normalizeHistoryType(type) {
+        return type === "pagesUrl" || type === "url" ? "pagesUrl" : "repoPath";
+    }
+
+    historyStorageKey(type) {
+        return this.normalizeHistoryType(type) === "pagesUrl" ? "pagesUrlHistory" : "repoPathHistory";
+    }
+
+    cleanHistoryValue(type, value) {
+        const text = String(value || "").trim();
+        return this.normalizeHistoryType(type) === "pagesUrl" ? text.replace(/\/+$/, "") : text;
+    }
+
+    platformKey(platform) {
+        return platform === "github" ? "github" : "gitee";
+    }
+
+    ensurePlatformHistoryConfig(data, platform) {
+        const key = this.platformKey(platform);
+        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] });
+        if (!Array.isArray(plat.repoPathHistory)) plat.repoPathHistory = [];
+        if (!Array.isArray(plat.pagesUrlHistory)) plat.pagesUrlHistory = [];
+        return plat;
+    }
+
+    getHistoryItems(platform, type) {
         const data = this.data[STORAGE_KEY] || this.defaultConfig();
-        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
-        if (!Array.isArray(plat.repoHistory)) plat.repoHistory = [];
-        const exists = plat.repoHistory.find(h => h.path === repoPath);
-        if (!exists) {
-            plat.repoHistory.push({ path: repoPath, label: repoPath.split(/[\\\/]/).pop() || repoPath });
-            this.persistConfig(data);
+        const plat = this.ensurePlatformHistoryConfig(data, platform);
+        const normalizedType = this.normalizeHistoryType(type);
+        return this.normalizeHistoryItems(plat[this.historyStorageKey(normalizedType)], normalizedType);
+    }
+
+    getHistoryTags(platform, type) {
+        const tags = new Set();
+        this.getHistoryItems(platform, type).forEach((item) => {
+            (item.tags || []).forEach((tag) => tags.add(tag));
+        });
+        return Array.from(tags).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    }
+
+    addHistoryItem(platform, type, value) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const cleanValue = this.cleanHistoryValue(normalizedType, value);
+        if (!cleanValue) return null;
+        const key = this.platformKey(platform);
+        const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = this.defaultConfig());
+        const plat = this.ensurePlatformHistoryConfig(data, key);
+        const historyKey = this.historyStorageKey(normalizedType);
+        const items = this.normalizeHistoryItems(plat[historyKey], normalizedType);
+        const now = new Date().toISOString();
+        let item = items.find((entry) => entry.value === cleanValue);
+        if (item) {
+            item.updatedAt = now;
+            item.lastUsedAt = now;
+        } else {
+            item = {
+                id: this.makeHistoryId(cleanValue),
+                value: cleanValue,
+                tags: [],
+                createdAt: now,
+                updatedAt: now,
+                lastUsedAt: now,
+            };
+            items.unshift(item);
         }
+        plat[historyKey] = items.sort((a, b) => String(b.lastUsedAt || "").localeCompare(String(a.lastUsedAt || "")));
+        this.persistConfig(data);
+        return item;
+    }
+
+    updateHistoryItemTags(platform, type, id, tags) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = this.defaultConfig());
+        const plat = this.ensurePlatformHistoryConfig(data, platform);
+        const historyKey = this.historyStorageKey(normalizedType);
+        const items = this.normalizeHistoryItems(plat[historyKey], normalizedType);
+        const item = items.find((entry) => entry.id === id);
+        if (!item) return false;
+        item.tags = this.parseTags(tags);
+        item.updatedAt = new Date().toISOString();
+        plat[historyKey] = items;
+        this.persistConfig(data);
+        return true;
+    }
+
+    removeHistoryItem(platform, type, id) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = this.defaultConfig());
+        const plat = this.ensurePlatformHistoryConfig(data, platform);
+        const historyKey = this.historyStorageKey(normalizedType);
+        plat[historyKey] = this.normalizeHistoryItems(plat[historyKey], normalizedType).filter((item) => item.id !== id);
+        this.persistConfig(data);
+        return true;
+    }
+
+    upsertRepoHistory(platform, repoPath) {
+        return this.addHistoryItem(platform, "repoPath", repoPath);
     }
 
     upsertUrlHistory(platform, pagesUrl) {
-        if (!pagesUrl || !platform) return;
-        const key = platform === "github" ? "github" : "gitee";
-        const data = this.data[STORAGE_KEY] || this.defaultConfig();
-        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
-        if (!Array.isArray(plat.urlHistory)) plat.urlHistory = [];
-        const cleanUrl = pagesUrl.replace(/\/+$/, "");
-        const exists = plat.urlHistory.find(h => h.url === cleanUrl);
-        if (!exists) {
-            plat.urlHistory.push({ url: cleanUrl, label: cleanUrl.split("//").pop() || cleanUrl });
-            this.persistConfig(data);
-        }
+        return this.addHistoryItem(platform, "pagesUrl", pagesUrl);
     }
 
     removeFromRepoHistory(platform, repoPath) {
-        const key = platform === "github" ? "github" : "gitee";
-        const data = this.data[STORAGE_KEY] || this.defaultConfig();
-        const plat = data[key];
-        if (!plat || !Array.isArray(plat.repoHistory)) return;
-        plat.repoHistory = plat.repoHistory.filter(h => h.path !== repoPath);
-        this.persistConfig(data);
+        const item = this.getHistoryItems(platform, "repoPath").find((entry) => entry.value === repoPath);
+        if (item) this.removeHistoryItem(platform, "repoPath", item.id);
     }
 
     removeFromUrlHistory(platform, pagesUrl) {
-        const key = platform === "github" ? "github" : "gitee";
-        const data = this.data[STORAGE_KEY] || this.defaultConfig();
-        const plat = data[key];
-        if (!plat || !Array.isArray(plat.urlHistory)) return;
-        plat.urlHistory = plat.urlHistory.filter(h => h.url !== pagesUrl);
-        this.persistConfig(data);
+        const cleanUrl = this.cleanHistoryValue("pagesUrl", pagesUrl);
+        const item = this.getHistoryItems(platform, "pagesUrl").find((entry) => entry.value === cleanUrl);
+        if (item) this.removeHistoryItem(platform, "pagesUrl", item.id);
+    }
+
+    _updateHistoryDatalist(dl, history) {
+        if (!dl) return;
+        dl.innerHTML = "";
+        (history || []).forEach((item) => {
+            const opt = document.createElement("option");
+            opt.value = item.value;
+            dl.appendChild(opt);
+        });
     }
 
     _updateRepoDatalist(dl, history) {
-        if (!dl) return;
-        dl.innerHTML = "";
-        (history || []).forEach(h => { const opt = document.createElement("option"); opt.value = h.path; dl.appendChild(opt); });
+        this._updateHistoryDatalist(dl, this.normalizeHistoryItems(history, "repoPath"));
     }
 
     _updateUrlDatalist(dl, history) {
-        if (!dl) return;
-        dl.innerHTML = "";
-        (history || []).forEach(h => { const opt = document.createElement("option"); opt.value = h.url; dl.appendChild(opt); });
+        this._updateHistoryDatalist(dl, this.normalizeHistoryItems(history, "pagesUrl"));
     }
 
-    _openHistoryModal(type, platform, inputEl, datalistEl, refs) {
-        const that = this;
-        const data = this.data[STORAGE_KEY] || this.defaultConfig();
-        const key = platform === "github" ? "github" : "gitee";
-        const plat = data[key] || (data[key] = { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] });
-        const history = type === "repo" ? (plat.repoHistory || []) : (plat.urlHistory || []);
+    refreshHistoryRefs(platform, type, refs = {}) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const items = this.getHistoryItems(platform, normalizedType);
+        const dl = normalizedType === "repoPath" ? refs.repoDatalist : refs.urlDatalist;
+        this._updateHistoryDatalist(dl, items);
+        if (refs.configData) {
+            const plat = this.ensurePlatformHistoryConfig(refs.configData, platform);
+            plat[this.historyStorageKey(normalizedType)] = items;
+        }
+        return items;
+    }
 
-        this.createModal({
-            title: type === "repo" ? "仓库路径历史" : "Pages URL 历史",
-            description: "点击选择或删除历史记录",
+    formatHistoryTime(value) {
+        const date = new Date(value || "");
+        if (Number.isNaN(date.getTime())) return "-";
+        const pad = (num) => String(num).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    }
+
+    applyHistoryValue(platform, type, value, refs = {}) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const cleanValue = this.cleanHistoryValue(normalizedType, value);
+        if (!cleanValue) return null;
+        if (!this.data[STORAGE_KEY]) this.data[STORAGE_KEY] = this.defaultConfig();
+        const applyToData = (target) => {
+            if (!target) return;
+            const plat = this.ensurePlatformHistoryConfig(target, platform);
+            plat[normalizedType] = cleanValue;
+        };
+        applyToData(this.data[STORAGE_KEY]);
+        applyToData(refs.configData);
+        const item = this.addHistoryItem(platform, normalizedType, cleanValue);
+        const inputEl = normalizedType === "repoPath" ? refs.repo : refs.url;
+        if (inputEl) inputEl.value = cleanValue;
+        this.refreshHistoryRefs(platform, normalizedType, refs);
+        return item;
+    }
+
+    _openHistoryModal(type, platform, inputEl, datalistEl, refs = {}) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const nextRefs = { ...refs };
+        if (normalizedType === "repoPath") {
+            nextRefs.repo = inputEl || nextRefs.repo;
+            nextRefs.repoDatalist = datalistEl || nextRefs.repoDatalist;
+        } else {
+            nextRefs.url = inputEl || nextRefs.url;
+            nextRefs.urlDatalist = datalistEl || nextRefs.urlDatalist;
+        }
+        return this.openHistoryPicker(platform, normalizedType, nextRefs);
+    }
+
+    openHistoryPicker(platform, type, refs = {}) {
+        const normalizedType = this.normalizeHistoryType(type);
+        const key = this.platformKey(platform);
+        const label = normalizedType === "repoPath" ? this.t("historyRepoPath", "仓库路径") : "Pages URL";
+        const titleText = this.t("historyTitle", "{label} 历史").replace("{label}", label);
+        const state = { query: "", tag: "__all" };
+        const that = this;
+        return this.createModal({
+            title: titleText,
+            description: this.t("historyDescription", "按关键词和标签筛选历史记录。标签由用户自定义，可为空。"),
             bodyBuilder: ({ body, close }) => {
-                if (!history.length) {
-                    const empty = document.createElement("div");
-                    empty.className = "pp-modal__empty";
-                    empty.textContent = "暂无历史记录";
-                    body.appendChild(empty);
-                    return;
-                }
+                const toolbar = document.createElement("div");
+                toolbar.className = "pp-history-toolbar";
+                const search = document.createElement("input");
+                search.type = "search";
+                search.className = "pp-history-search";
+                search.placeholder = this.t("historySearch", "搜索历史值");
+                const filters = document.createElement("div");
+                filters.className = "pp-history-filters";
+                toolbar.appendChild(search);
+                toolbar.appendChild(filters);
+
                 const list = document.createElement("div");
                 list.className = "pp-history-list";
-                history.forEach((item) => {
-                    const val = type === "repo" ? item.path : item.url;
-                    const row = document.createElement("div");
-                    row.className = "pp-history-item";
-                    const txt = document.createElement("span");
-                    txt.className = "pp-history-item__text";
-                    txt.textContent = val;
-                    txt.title = val;
-                    const selBtn = document.createElement("button");
-                    selBtn.type = "button";
-                    selBtn.className = "pp-history-item__select";
-                    selBtn.textContent = "选择";
-                    selBtn.addEventListener("click", () => {
-                        inputEl.value = val;
-                        if (type === "repo") {
-                            plat.repoPath = val;
-                        } else {
-                            plat.pagesUrl = val;
-                        }
-                        that.persistConfig(data);
-                        close();
-                    });
-                    const delBtn = document.createElement("button");
-                    delBtn.type = "button";
-                    delBtn.className = "pp-history-item__delete";
-                    delBtn.textContent = "删除";
-                    delBtn.addEventListener("click", () => {
-                        if (type === "repo") {
-                            that.removeFromRepoHistory(platform, val);
-                        } else {
-                            that.removeFromUrlHistory(platform, val);
-                        }
-                        const updated = type === "repo" ? plat.repoHistory : plat.urlHistory;
-                        if (type === "repo") that._updateRepoDatalist(refs.repoDatalist, updated);
-                        else that._updateUrlDatalist(refs.urlDatalist, updated);
-                        row.remove();
-                        if (!list.children.length) {
-                            const empty2 = document.createElement("div");
-                            empty2.className = "pp-modal__empty";
-                            empty2.textContent = "暂无历史记录";
-                            list.replaceWith(empty2);
-                        }
-                    });
-                    row.appendChild(txt);
-                    row.appendChild(selBtn);
-                    row.appendChild(delBtn);
-                    list.appendChild(row);
-                });
+                body.appendChild(toolbar);
                 body.appendChild(list);
+
+                const renderFilters = (items) => {
+                    filters.innerHTML = "";
+                    const tags = this.getHistoryTags(key, normalizedType);
+                    const hasUntagged = items.some((item) => !item.tags || !item.tags.length);
+                    const allowed = new Set(["__all", ...tags, ...(hasUntagged ? ["__untagged"] : [])]);
+                    if (!allowed.has(state.tag)) state.tag = "__all";
+                    const addFilter = (value, text) => {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "pp-history-filter-chip" + (state.tag === value ? " active" : "");
+                        btn.textContent = text;
+                        btn.addEventListener("click", () => {
+                            state.tag = value;
+                            render();
+                        });
+                        filters.appendChild(btn);
+                    };
+                    addFilter("__all", this.t("historyFilterAll", "全部"));
+                    tags.forEach((tag) => addFilter(tag, tag));
+                    if (hasUntagged) addFilter("__untagged", this.t("historyFilterUntagged", "未标记"));
+                };
+
+                const render = () => {
+                    const items = this.getHistoryItems(key, normalizedType);
+                    renderFilters(items);
+                    const query = state.query.trim().toLowerCase();
+                    const filtered = items.filter((item) => {
+                        const matchQuery = !query || String(item.value || "").toLowerCase().includes(query);
+                        const matchTag = state.tag === "__all"
+                            || (state.tag === "__untagged" ? !(item.tags || []).length : (item.tags || []).includes(state.tag));
+                        return matchQuery && matchTag;
+                    });
+                    list.innerHTML = "";
+                    if (!filtered.length) {
+                        const empty = document.createElement("div");
+                        empty.className = "pp-modal__empty";
+                        empty.textContent = items.length ? this.t("historyNoMatched", "没有匹配的历史记录") : this.t("historyEmpty", "暂无历史记录");
+                        list.appendChild(empty);
+                        return;
+                    }
+                    filtered.forEach((item) => {
+                        const row = document.createElement("div");
+                        row.className = "pp-history-item";
+
+                        const main = document.createElement("div");
+                        main.className = "pp-history-item__main";
+                        const valueEl = document.createElement("div");
+                        valueEl.className = "pp-history-item__text";
+                        valueEl.textContent = item.value;
+                        valueEl.title = item.value;
+                        const chips = document.createElement("div");
+                        chips.className = "pp-history-item__tags";
+                        if ((item.tags || []).length) {
+                            item.tags.forEach((tag) => {
+                                const chip = document.createElement("span");
+                                chip.className = "pp-history-tag";
+                                chip.textContent = tag;
+                                chips.appendChild(chip);
+                            });
+                        } else {
+                            const chip = document.createElement("span");
+                            chip.className = "pp-history-tag pp-history-tag--empty";
+                            chip.textContent = this.t("historyFilterUntagged", "未标记");
+                            chips.appendChild(chip);
+                        }
+                        const time = document.createElement("div");
+                        time.className = "pp-history-item__time";
+                        time.textContent = `${this.t("historyLastUsed", "最后使用")} ${this.formatHistoryTime(item.lastUsedAt)}`;
+                        main.appendChild(valueEl);
+                        main.appendChild(chips);
+                        main.appendChild(time);
+
+                        const actions = document.createElement("div");
+                        actions.className = "pp-history-item__actions";
+                        const useBtn = document.createElement("button");
+                        useBtn.type = "button";
+                        useBtn.className = "pp-history-item__select";
+                        useBtn.textContent = this.t("historyUse", "使用");
+                        useBtn.addEventListener("click", () => {
+                            that.applyHistoryValue(key, normalizedType, item.value, refs);
+                            close();
+                        });
+                        const editBtn = document.createElement("button");
+                        editBtn.type = "button";
+                        editBtn.className = "pp-history-item__select";
+                        editBtn.textContent = this.t("historyEditTags", "编辑标签");
+                        editBtn.addEventListener("click", () => {
+                            const next = window.prompt(
+                                that.t("historyEditTagsPrompt", "输入标签，支持逗号、顿号、空格或换行分隔"),
+                                (item.tags || []).join(", "),
+                            );
+                            if (next === null) return;
+                            that.updateHistoryItemTags(key, normalizedType, item.id, that.parseTags(next));
+                            that.refreshHistoryRefs(key, normalizedType, refs);
+                            render();
+                        });
+                        const delBtn = document.createElement("button");
+                        delBtn.type = "button";
+                        delBtn.className = "pp-history-item__delete";
+                        delBtn.textContent = this.t("historyDelete", "删除");
+                        delBtn.addEventListener("click", () => {
+                            that.removeHistoryItem(key, normalizedType, item.id);
+                            that.refreshHistoryRefs(key, normalizedType, refs);
+                            render();
+                        });
+                        actions.appendChild(useBtn);
+                        actions.appendChild(editBtn);
+                        actions.appendChild(delBtn);
+                        row.appendChild(main);
+                        row.appendChild(actions);
+                        list.appendChild(row);
+                    });
+                };
+
+                search.addEventListener("input", () => {
+                    state.query = search.value || "";
+                    render();
+                });
+                render();
             },
         });
     }
@@ -525,8 +802,8 @@ class PagesPublisher extends Plugin {
     showFallbackPanel() {
         const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = {
             platform: "gitee",
-            gitee: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
-            github: { repoPath: "", pagesUrl: "", repoHistory: [], urlHistory: [] },
+            gitee: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
+            github: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
             autoCommit: true,
             shares: [],
         });
@@ -544,9 +821,10 @@ class PagesPublisher extends Plugin {
                 el.placeholder = plat === "github" ? "C:\\Users\\xxx\\github-pages" : "C:\\Users\\xxx\\gitee-pages";
                 el.addEventListener("change", () => {
                     const key = currentPlatform();
-                    const p = data[key] || (data[key] = {});
-                    p.repoPath = el.value;
-                    this.persistConfig(data);
+                    const p = this.ensurePlatformHistoryConfig(data, key);
+                    p.repoPath = this.cleanHistoryValue("repoPath", el.value);
+                    if (p.repoPath) this.addHistoryItem(key, "repoPath", p.repoPath);
+                    else this.persistConfig(data);
                 });
                 return el;
             },
@@ -562,9 +840,11 @@ class PagesPublisher extends Plugin {
                 el.placeholder = plat === "github" ? "https://yourname.github.io" : "https://yourname.gitee.io";
                 el.addEventListener("change", () => {
                     const key = currentPlatform();
-                    const p = data[key] || (data[key] = {});
-                    p.pagesUrl = el.value.replace(/\/+$/, "");
-                    this.persistConfig(data);
+                    const p = this.ensurePlatformHistoryConfig(data, key);
+                    p.pagesUrl = this.cleanHistoryValue("pagesUrl", el.value);
+                    el.value = p.pagesUrl;
+                    if (p.pagesUrl) this.addHistoryItem(key, "pagesUrl", p.pagesUrl);
+                    else this.persistConfig(data);
                 });
                 return el;
             },
@@ -1097,6 +1377,24 @@ class PagesPublisher extends Plugin {
         const refs = {};
         const plat = data.platform || "gitee";
         const currentPlatform = () => data.platform || "gitee";
+        refs.configData = data;
+        const commitInputValue = (type, rawValue) => {
+            const normalizedType = that.normalizeHistoryType(type);
+            const key = currentPlatform();
+            const cleanValue = that.cleanHistoryValue(normalizedType, rawValue);
+            if (!that.data[STORAGE_KEY]) that.data[STORAGE_KEY] = data;
+            [data, that.data[STORAGE_KEY]].forEach((target) => {
+                const p = that.ensurePlatformHistoryConfig(target, key);
+                p[normalizedType] = cleanValue;
+            });
+            if (cleanValue) {
+                that.addHistoryItem(key, normalizedType, cleanValue);
+            } else {
+                that.persistConfig(data);
+            }
+            that.refreshHistoryRefs(key, normalizedType, refs);
+            return cleanValue;
+        };
 
         this.refreshLastActiveDocInfo("panel-open").catch(() => {});
         this.setting = new Setting({ width: "min(720px, 92vw)", height: "min(82vh, 820px)" });
@@ -1118,8 +1416,8 @@ class PagesPublisher extends Plugin {
                         cards.querySelectorAll(".pp-platform-card").forEach(c => c.classList.remove("active"));
                         el.classList.add("active");
                         const pc = data[val] || {};
-                        if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; that._updateRepoDatalist(refs.repoDatalist, pc.repoHistory || []); }
-                        if (refs.url)  { refs.url.value  = pc.pagesUrl || "";  refs.url.placeholder  = val==="github"?"https://yourname.github.io":"https://yourname.gitee.io"; that._updateUrlDatalist(refs.urlDatalist, pc.urlHistory || []); }
+                        if (refs.repo) { refs.repo.value = pc.repoPath || ""; refs.repo.placeholder = val==="github"?"C:\\Users\\xxx\\github-pages":"C:\\Users\\xxx\\gitee-pages"; that.refreshHistoryRefs(val, "repoPath", refs); }
+                        if (refs.url)  { refs.url.value  = pc.pagesUrl || "";  refs.url.placeholder  = val==="github"?"https://yourname.github.io":"https://yourname.gitee.io"; that.refreshHistoryRefs(val, "pagesUrl", refs); }
                     });
                     return el;
                 };
@@ -1139,7 +1437,7 @@ class PagesPublisher extends Plugin {
             className: "pp-field pp-custom-host pp-config-item pp-config-start",
             createActionElement: () => {
                 const wrap = document.createElement("div");
-                wrap.className = "pp-input-history-wrap";
+                wrap.className = "pp-input-group pp-input-history-wrap";
                 const el = document.createElement("input");
                 el.className = "pp-input pp-input--with-history";
                 el.setAttribute("list", "pp-repo-datalist");
@@ -1147,16 +1445,18 @@ class PagesPublisher extends Plugin {
                 el.value = pc.repoPath || "";
                 el.placeholder = plat === "github" ? "C:\\Users\\xxx\\github-pages" : "C:\\Users\\xxx\\gitee-pages";
                 el.spellcheck = false;
-                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.repoPath=el.value; that.persistConfig(data); if(el.value) that.upsertRepoHistory(key, el.value); });
+                const commit = () => { el.value = commitInputValue("repoPath", el.value); };
+                el.addEventListener("change", commit);
+                el.addEventListener("blur", commit);
                 const dl = document.createElement("datalist");
                 dl.id = "pp-repo-datalist";
-                (pc.repoHistory || []).forEach(h => { const opt=document.createElement("option"); opt.value=h.path; dl.appendChild(opt); });
+                that._updateHistoryDatalist(dl, that.getHistoryItems(plat, "repoPath"));
                 const btn = document.createElement("button");
                 btn.type = "button";
                 btn.className = "pp-input-history-btn";
-                btn.textContent = "历史";
-                btn.title = "管理仓库历史路径";
-                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that._openHistoryModal("repo", currentPlatform(), el, dl, refs); });
+                btn.textContent = that.t("historyButton", "历史");
+                btn.title = that.t("historyRepoPathTitle", "管理仓库历史路径");
+                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that.openHistoryPicker(currentPlatform(), "repoPath", refs); });
                 wrap.appendChild(el);
                 wrap.appendChild(dl);
                 wrap.appendChild(btn);
@@ -1176,7 +1476,7 @@ class PagesPublisher extends Plugin {
             className: "pp-field pp-custom-host pp-config-item pp-config-mid",
             createActionElement: () => {
                 const wrap = document.createElement("div");
-                wrap.className = "pp-input-history-wrap";
+                wrap.className = "pp-input-group pp-input-history-wrap";
                 const el = document.createElement("input");
                 el.className = "pp-input pp-input--with-history";
                 el.setAttribute("list", "pp-url-datalist");
@@ -1184,16 +1484,18 @@ class PagesPublisher extends Plugin {
                 el.value = pc.pagesUrl || "";
                 el.placeholder = plat === "github" ? "https://yourname.github.io" : "https://yourname.gitee.io";
                 el.spellcheck = false;
-                el.addEventListener("change", () => { const key=currentPlatform(); const p=data[key]||(data[key]={}); p.pagesUrl=el.value.replace(/\/+$/,""); that.persistConfig(data); if(el.value) that.upsertUrlHistory(key, el.value); });
+                const commit = () => { el.value = commitInputValue("pagesUrl", el.value); };
+                el.addEventListener("change", commit);
+                el.addEventListener("blur", commit);
                 const dl = document.createElement("datalist");
                 dl.id = "pp-url-datalist";
-                (pc.urlHistory || []).forEach(h => { const opt=document.createElement("option"); opt.value=h.url; dl.appendChild(opt); });
+                that._updateHistoryDatalist(dl, that.getHistoryItems(plat, "pagesUrl"));
                 const btn = document.createElement("button");
                 btn.type = "button";
                 btn.className = "pp-input-history-btn";
-                btn.textContent = "历史";
-                btn.title = "管理 Pages URL 历史";
-                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that._openHistoryModal("url", currentPlatform(), el, dl, refs); });
+                btn.textContent = that.t("historyButton", "历史");
+                btn.title = that.t("historyPagesUrlTitle", "管理 Pages URL 历史");
+                btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); that.openHistoryPicker(currentPlatform(), "pagesUrl", refs); });
                 wrap.appendChild(el);
                 wrap.appendChild(dl);
                 wrap.appendChild(btn);
@@ -1742,6 +2044,10 @@ class PagesPublisher extends Plugin {
 
     setProgress(percent, text) {
         const p = Math.max(0, Math.min(100, Math.round(percent)));
+        if (this.progressTimer) {
+            clearTimeout(this.progressTimer);
+            this.progressTimer = null;
+        }
         if (!this.progressEl) {
             const el = document.createElement("div");
             el.id = "pages-pub-progress";
@@ -1759,10 +2065,16 @@ class PagesPublisher extends Plugin {
         if (this.progressEl) {
             this.progressEl.querySelector(".pp-progress-bar").style.background = isError ? "#d23f31" : "#2ea043";
         }
-        setTimeout(() => {
+        if (this.progressTimer) clearTimeout(this.progressTimer);
+        this.progressTimer = setTimeout(() => {
             this.progressEl?.remove();
             this.progressEl = null;
+            this.progressTimer = null;
         }, isError ? 8000 : 3500);
+    }
+
+    completePushProgress(message = "远程推送成功") {
+        this.finishProgress(message, false);
     }
 
     // === 发布 ===
@@ -1962,7 +2274,7 @@ class PagesPublisher extends Plugin {
 
         const shouldAutoPush = cfg.autoCommit && !skipAutoPush;
         if (shouldAutoPush) {
-            this.finishProgress("本地发布完成，正在尝试后台推送...");
+            this.setProgress(78, "本地发布完成，正在尝试后台推送...");
             showMessage(`本地发布完成: ${slug}/index.html`, 3000, "info");
             // Fire-and-forget non-blocking push
             const that = this;
@@ -2061,7 +2373,9 @@ class PagesPublisher extends Plugin {
                 await this.deletePublishedDir({ ...record, repoPath });
                 try {
                     this.setProgress(65, "同步删除到远程...");
-                    await this.gitCommitAndPush(repoPath, `Delete published page: ${record.title || record.slug}`, scopeDir);
+                    await this.gitCommitAndPush(repoPath, `Delete published page: ${record.title || record.slug}`, scopeDir, {
+                        suppressProgressFinish: true,
+                    });
                 } catch (err) {
                     const msg = this.formatError(err);
                     console.error("[siyuan-plugin-gitee-pages] deleteShare git sync failed:", err);
@@ -2093,8 +2407,8 @@ class PagesPublisher extends Plugin {
         fs.rmSync(dir, { recursive: true, force: true });
     }
 
-    async gitCommitAndPush(repoPath, message, scopeDir) {
-        return this.gitPush(repoPath, message || "Delete published page", scopeDir, message);
+    async gitCommitAndPush(repoPath, message, scopeDir, pushOptions = {}) {
+        return this.gitPush(repoPath, message || "Delete published page", scopeDir, message, pushOptions);
     }
 
     buildShareUrl(baseUrl, slug) {
@@ -3246,6 +3560,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             const err = new Error(precheck.issues.join("\n"));
             err.gitPushErrorType = "UPSTREAM_MISSING";
             await this.markRepoPushStatus(repoPath, "failed", err.gitPushErrorType, precheck.issues.join("\n"));
+            this.finishProgress("发布前检查未通过", true);
             this.createModal({
                 title: "发布前检查未通过",
                 description: "请先修复以下问题，再重新推送。",
@@ -3261,11 +3576,13 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         try {
             await this.runGitPushWithRetry(o);
             await this.markRepoPushStatus(repoPath, "success", "", "");
+            this.completePushProgress("远程补推成功");
             showMessage("远程补推成功", 3000, "info");
         } catch (err) {
             const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
             const message = this.formatError(err);
             await this.markRepoPushStatus(repoPath, "failed", errorType, message);
+            this.finishProgress(`远程补推失败: ${this.buildGitPushHint(errorType)}`, true);
             if (errorType === "REMOTE_AHEAD") {
                 await this.openRemoteAheadDialog(repoPath);
             } else {
@@ -3286,59 +3603,68 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
 
     async syncRemoteThenPush(repoPath) {
         const o = { cwd: repoPath };
-
-        // 1. Check workspace cleanliness before pulling
-        let workspaceClean = true;
         try {
-            await this.runCommand("git diff --quiet", o);
-            await this.runCommand("git diff --cached --quiet", o);
-        } catch (e) {
-            workspaceClean = false;
-        }
-        if (!workspaceClean) {
-            const err = new Error("工作区有未提交的修改，请先提交或暂存后再同步远程。");
-            err.gitPushErrorType = "REBASE_CONFLICT";
-            throw err;
-        }
-
-        const syncInfo = await this.getRepoSyncStatus(repoPath);
-        this.setProgress(86, "同步远程分支...");
-
-        // 2. Try pull --rebase with conflict detection
-        try {
-            await this.runCommand(`git pull --rebase ${syncInfo.remoteName} ${syncInfo.remoteBranch}`, o);
-        } catch (pullErr) {
-            const msg = this.formatError(pullErr);
-            if (/conflict|CONFLICT|would be overwritten|merge conflict/i.test(msg)) {
-                // Abort the rebase
-                try { await this.runCommand("git rebase --abort", o); } catch (abortErr) { /* best effort */ }
-                const err = new Error("同步远程时发生冲突，已中止 rebase。请手动解决冲突后重试。");
+            let workspaceClean = true;
+            try {
+                await this.runCommand("git diff --quiet", o);
+                await this.runCommand("git diff --cached --quiet", o);
+            } catch (e) {
+                workspaceClean = false;
+            }
+            if (!workspaceClean) {
+                const err = new Error("工作区有未提交的修改，请先提交或暂存后再同步远程。");
                 err.gitPushErrorType = "REBASE_CONFLICT";
-                await this.markRepoPushStatus(repoPath, "failed", "REBASE_CONFLICT", msg);
                 throw err;
             }
-            throw pullErr;
+
+            const syncInfo = await this.getRepoSyncStatus(repoPath);
+            this.setProgress(86, "同步远程分支...");
+
+            try {
+                await this.runCommand(`git pull --rebase ${syncInfo.remoteName} ${syncInfo.remoteBranch}`, o);
+            } catch (pullErr) {
+                const msg = this.formatError(pullErr);
+                if (/conflict|CONFLICT|would be overwritten|merge conflict/i.test(msg)) {
+                    try { await this.runCommand("git rebase --abort", o); } catch (abortErr) { /* best effort */ }
+                    const err = new Error("同步远程时发生冲突，已中止 rebase。请手动解决冲突后重试。");
+                    err.gitPushErrorType = "REBASE_CONFLICT";
+                    await this.markRepoPushStatus(repoPath, "failed", "REBASE_CONFLICT", msg);
+                    throw err;
+                }
+                throw pullErr;
+            }
+
+            this.setProgress(92, "重新推送到远程...");
+            await this.runGitPushWithRetry(o);
+            await this.markRepoPushStatus(repoPath, "success", "", "");
+
+            try {
+                await this.syncLocalShareRecords(repoPath);
+            } catch (syncErr) {
+                console.error("[Pages Publisher] syncLocalShareRecords after syncRemoteThenPush failed:", syncErr);
+            }
+
+            this.completePushProgress("已同步远程并推送成功");
+            return syncInfo;
+        } catch (err) {
+            const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
+            this.finishProgress(`同步远程后推送失败: ${this.buildGitPushHint(errorType)}`, true);
+            throw err;
         }
-
-        this.setProgress(92, "重新推送到远程...");
-        await this.runGitPushWithRetry(o);
-        await this.markRepoPushStatus(repoPath, "success", "", "");
-
-        // 3. Reconcile share records with local files
-        try {
-            await this.syncLocalShareRecords(repoPath);
-        } catch (syncErr) {
-            console.error("[Pages Publisher] syncLocalShareRecords after syncRemoteThenPush failed:", syncErr);
-        }
-
-        return syncInfo;
     }
 
     async forcePushRepo(repoPath) {
         const o = { cwd: repoPath };
-        this.setProgress(92, "强制覆盖远程...");
-        await this.runCommand("git push --force-with-lease", { ...o, timeoutMs: 30_000 });
-        await this.markRepoPushStatus(repoPath, "success", "", "");
+        try {
+            this.setProgress(92, "强制覆盖远程...");
+            await this.runCommand("git push --force-with-lease", { ...o, timeoutMs: 30_000 });
+            await this.markRepoPushStatus(repoPath, "success", "", "");
+            this.completePushProgress("已强制覆盖远程并推送成功");
+        } catch (err) {
+            const errorType = err?.gitPushErrorType || this.classifyGitPushError(err);
+            this.finishProgress(`强制推送失败: ${this.buildGitPushHint(errorType)}`, true);
+            throw err;
+        }
     }
 
     async openRemoteAheadDialog(repoPath, onDone) {
@@ -3606,6 +3932,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             // Force push with timeout
             this.setProgress(92, "推送到远程...");
             await this.runCommand("git push --force-with-lease", { ...o, timeoutMs: 30_000 });
+            this.completePushProgress("清理并补推成功");
             showMessage("清理并补推成功", 3000, "info");
             // Update all share records for this repoPath to pushStatus=success
             const records = this.getShareRecords();
@@ -3627,6 +3954,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             const errorType = this.classifyGitPushError(err);
             const hint = this.buildGitPushHint(errorType);
             err.gitPushErrorType = errorType;
+            this.finishProgress(`清理并补推失败: ${hint}`, true);
             showMessage(`清理并补推失败: ${hint}`, 6000, "error");
             // Update records with failure
             const records = this.getShareRecords();
@@ -3670,10 +3998,13 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
                     this.setProgress(88, "补推之前未推送的提交...");
                     showMessage("无新变化，补推之前未推送的提交...", 2500, "info");
                     await this.runGitPushWithRetry(o);
+                    if (!pushOptions.suppressProgressFinish) this.completePushProgress("远程推送成功");
+                    return { committed: false, pushed: true, skipped: false, errorType: "" };
                 } else {
                     showMessage("无变化，跳过",2000,"info");
+                    if (!pushOptions.suppressProgressFinish) this.completePushProgress("无变化，已跳过推送");
+                    return { committed: false, pushed: false, skipped: true, errorType: "" };
                 }
-                return;
             }
             this.setProgress(86, "Git 创建提交...");
             const finalMessage = commitMessage || `Publish SiYuan HTML: ${title}`;
@@ -3682,12 +4013,14 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             this.setProgress(92, "推送到远程仓库...");
             showMessage("推送中...",2000,"info");
             await this.runGitPushWithRetry(o);
+            if (!pushOptions.suppressProgressFinish) this.completePushProgress("远程推送成功");
             return { committed, pushed: true, errorType: "" };
         }catch(err){
             const m = this.formatError(err);
             const errorType = this.classifyGitPushError(err);
             const hint = this.buildGitPushHint(errorType);
             err.gitPushErrorType = errorType;
+            if (!pushOptions.suppressProgressFinish) this.finishProgress(`${committed ? "Git 推送失败" : "Git 失败"}: ${hint}`, true);
             showMessage(`${committed ? "Git 推送失败" : "Git 失败"}: ${hint}\n${m}`, 9000, "error");
             if (errorType === "REMOTE_AHEAD" && repoPath) {
                 setTimeout(() => {

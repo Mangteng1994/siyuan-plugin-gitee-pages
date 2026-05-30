@@ -42,7 +42,7 @@ Both platforms can be configured simultaneously and switched at any time.
 - Auto-attaches enabled CSS/JS snippets and Petals
 - Auto Git: add → commit → push
 - Publish history with re-publish, delete, manual push, and push status tracking
-- Multi-repo / multi-URL history management with quick switch
+- Multi-repo / multi-URL history management with custom tags and filtering
 - Open config directory for manual editing of `pages-pub-config`
 - Share list auto-sync with local repo files after pull/push
 
@@ -75,6 +75,13 @@ repo root/
 **Style mismatch**: Published appearance depends on the active SiYuan theme. Re-publish after switching themes.
 
 ## Changelog
+
+### v1.0.6
+
+- **Settings layout fix**: Inputs, history buttons, platform cards, and publish button now share one stable right edge without horizontal overflow.
+- **Push progress fix**: Successful push, sync-then-push, force push, and no-change skip paths now finish at 100% and auto-dismiss.
+- **Tagged history**: Repo path and Pages URL history entries now support user-defined tags, search, tag filtering, use, edit, and delete actions.
+- **Config migration**: Older string or `{ path/url }` history records migrate to normalized `{ id, value, tags, createdAt, updatedAt, lastUsedAt }` records.
 
 ### v1.0.5
 

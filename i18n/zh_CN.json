@@ -1,4 +1,20 @@
 {
   "publishToGitee": "发布到 Pages",
-  "openGiteeSettings": "Pages 发布"
+  "openGiteeSettings": "Pages 发布",
+  "historyRepoPath": "仓库路径",
+  "historyTitle": "{label} 历史",
+  "historyDescription": "按关键词和标签筛选历史记录。标签由用户自定义，可为空。",
+  "historyButton": "历史",
+  "historyRepoPathTitle": "管理仓库历史路径",
+  "historyPagesUrlTitle": "管理 Pages URL 历史",
+  "historySearch": "搜索历史值",
+  "historyFilterAll": "全部",
+  "historyFilterUntagged": "未标记",
+  "historyNoMatched": "没有匹配的历史记录",
+  "historyEmpty": "暂无历史记录",
+  "historyLastUsed": "最后使用",
+  "historyUse": "使用",
+  "historyEditTags": "编辑标签",
+  "historyEditTagsPrompt": "输入标签，支持逗号、顿号、空格或换行分隔",
+  "historyDelete": "删除"
 }

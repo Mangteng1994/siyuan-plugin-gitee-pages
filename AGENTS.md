@@ -2,9 +2,9 @@
 
 ## Project Summary
 
-This repository contains a SiYuan Note desktop plugin that publishes a document as static HTML to either Gitee Pages or GitHub Pages.
+Repo = SiYuan desktop plugin. Publish doc → static HTML → Gitee Pages / GitHub Pages.
 
-The plugin renders exported pages with SiYuan's Protyle runtime and copies the required shared assets into the target repository so the published result stays close to the in-app reading experience.
+Render export pages via SiYuan Protyle runtime. Copy required shared assets into target repo → published result stay close to in-app reading.
 
 ## Repository Facts
 
@@ -14,11 +14,11 @@ The plugin renders exported pages with SiYuan's Protyle runtime and copies the r
 - User-facing docs: `README.md`, `README_zh_CN.md`
 - Images/assets in repo root: `icon.png`, `preview.png`
 
-There is no source TypeScript in this repository. `index.js` is bundled output and is the only code file that should be edited here.
+No TS source. `index.js` = bundled output. Only code file edit here.
 
 ## Runtime Shape
 
-`index.js` exports a class extending `Plugin` from `"siyuan"`.
+`index.js` export class extends `Plugin` from `"siyuan"`.
 
 Important constants:
 
@@ -43,26 +43,26 @@ Normalized config shape:
 
 Config lifecycle:
 
-- `defaultConfig()` defines defaults
-- `normalizeConfig(cfg)` is the canonical shape gate
-- `loadConfig()` loads persisted data and normalizes it
-- `persistConfig(cfg)` normalizes then saves asynchronously
-- `persistConfigAndWait(cfg)` normalizes then saves with `await`
-- `onload()` seeds runtime state from `loadConfig()` and immediately persists normalized defaults
+- `defaultConfig()` define defaults
+- `normalizeConfig(cfg)` = shape gate (canonical)
+- `loadConfig()` load persisted data + normalize
+- `persistConfig(cfg)` normalize + save async
+- `persistConfigAndWait(cfg)` normalize + save with `await`
+- `onload()` seed runtime state from `loadConfig()` + persist normalized defaults immediately
 
 ## Critical Rule: Adding Config Fields
 
-When introducing any new config field, update all of the following:
+Add new config field → update all 3:
 
 1. `defaultConfig()`
 2. `normalizeConfig()`
 3. Settings UI inside `showPanel()` so saved values are read back into inputs
 
-If any of these three are missed, the field will be reset or silently dropped on load/save.
+Miss any → field reset or silently dropped on load/save.
 
 ## Settings Panel Notes
 
-The settings UI is built inside `showPanel()` with SiYuan's `Setting` API.
+Settings UI built in `showPanel()` via SiYuan `Setting` API.
 
 Current pattern:
 
@@ -70,7 +70,7 @@ Current pattern:
 - Save handlers call `that.persistConfig(data)`
 - The `data` object is a live config reference, not a copied snapshot
 
-When changing settings behavior, preserve that flow unless there is a strong reason to refactor the whole panel consistently.
+Change settings behavior → preserve flow unless strong reason refactor whole panel consistently.
 
 ## Share Record Notes
 
@@ -81,21 +81,21 @@ Share history is normalized and managed through:
 - `upsertShareRecord()`
 - `removeShareRecord()`
 
-Do not write ad hoc share objects directly into config without passing through the normalization path.
+No ad hoc share objects into config. Must go normalization path.
 
 ## Git Execution Notes
 
-Git commands are run through `runCommand(cmd, options)`.
+Git cmds run via `runCommand(cmd, options)`.
 
 - `getGitProxy()` reads `this.data[STORAGE_KEY]?.gitProxy`
 - If `cmd` starts with `"git "`, `runCommand()` may inject `-c http.proxy=...` and `-c https.proxy=...`
 - Empty `gitProxy` means no proxy flags are injected
 
-Any change to git command construction must preserve proxy injection behavior for both Gitee and GitHub flows.
+Any change to git cmd construction must preserve proxy injection for both Gitee/GitHub flows.
 
 ## Publishing Model
 
-The plugin publishes into a user-provided local git repository.
+Publish into user-provided local git repo.
 
 Typical output layout:
 
@@ -115,12 +115,12 @@ Publishing work in `index.js` includes:
 - updating share records
 - optionally running git add/commit/push
 
-When changing publish logic, check both first-publish and re-publish paths.
+Change publish logic → check first-publish + re-publish paths.
 
 ## Editing Rules for This Repo
 
 - Edit `index.js` directly; do not assume an unbundled source tree exists locally
-- Keep patches minimal and localized because the file is bundled and large
+- Keep patch minimal/local; file bundled + big
 - Reuse existing helper methods and patterns instead of introducing parallel implementations
 - Do not add scratch files, temporary scripts, or extra folders unless absolutely necessary
 - If you touch user-visible behavior, update `README.md` and `README_zh_CN.md` when the change materially affects usage
@@ -129,12 +129,12 @@ When changing publish logic, check both first-publish and re-publish paths.
 
 ## Lifecycle Rules
 
-- Persistent plugin config stored with `saveData(STORAGE_FILE, ...)` must be cleaned up in `async uninstall()` via `removeData(STORAGE_FILE)`
-- Do not put config cleanup in `onunload()`, because disabling the plugin must not delete user configuration
-- `async uninstall()` must clean up `pages-pub-config` created by `saveData(STORAGE_FILE, ...)`
-- `async uninstall()` may best-effort remove `data/storage/petal/siyuan-plugin-gitee-pages` because it is plugin-owned persisted storage
-- Do not synchronously remove `data/plugins/siyuan-plugin-gitee-pages` from inside the plugin's own `uninstall()` hook; the plugin install directory is owned by SiYuan's community package remover
-- Never delete `gitee.repoPath`, `github.repoPath`, or any `shares[*].repoPath` target; those are real user repositories, not plugin-owned storage
+- Persistent plugin config via `saveData(STORAGE_FILE, ...)` must be cleaned in `async uninstall()` via `removeData(STORAGE_FILE)`
+- No config cleanup in `onunload()`; disable plugin must not delete user config
+- `async uninstall()` must clean `pages-pub-config` created by `saveData(STORAGE_FILE, ...)`
+- `async uninstall()` may best-effort remove `data/storage/petal/siyuan-plugin-gitee-pages` (plugin-owned persisted storage)
+- Do not sync remove `data/plugins/siyuan-plugin-gitee-pages` inside plugin `uninstall()` hook; install dir owned by SiYuan community package remover
+- Never delete `gitee.repoPath`, `github.repoPath`, `shares[*].repoPath`; those real user repos, not plugin-owned storage
 
 ## Localization Rules
 
@@ -149,7 +149,7 @@ When changing publish logic, check both first-publish and re-publish paths.
 
 ## Validation Checklist
 
-Before considering a change done, verify as many of these as the task allows:
+Before call change "done": verify as many as task allows:
 
 - Config still round-trips through load/save without field loss
 - Settings panel reflects saved values after reopening
@@ -165,7 +165,7 @@ Before considering a change done, verify as many of these as the task allows:
 
 ## Search Anchors
 
-Useful symbols to locate related logic quickly:
+Fast find symbols:
 
 - `defaultConfig`
 - `normalizeConfig`
@@ -182,7 +182,7 @@ Useful symbols to locate related logic quickly:
 
 ## Agent Working Rules
 
-When operating in this repository:
+Work in this repo:
 
 1. Start non-trivial work with a visible plan.
 2. Keep steps atomic and verifiable.
@@ -190,3 +190,4 @@ When operating in this repository:
 4. Clean up after yourself completely; leave no temporary artifacts.
 5. Do not ship a config change unless the full config lifecycle has been checked.
 6. If blocked, state the exact blocker, attempted mitigation, and the missing information or access needed.
+7. Default reply style: use Caveman skill, intensity `full`, unless the user explicitly asks for another style.

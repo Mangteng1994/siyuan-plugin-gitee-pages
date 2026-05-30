@@ -1,4 +1,20 @@
 {
   "publishToGitee": "Publish to Pages",
-  "openGiteeSettings": "Pages Publisher"
+  "openGiteeSettings": "Pages Publisher",
+  "historyRepoPath": "Repo path",
+  "historyTitle": "{label} History",
+  "historyDescription": "Filter history records by keyword and tag. Tags are user-defined and may be empty.",
+  "historyButton": "History",
+  "historyRepoPathTitle": "Manage repo path history",
+  "historyPagesUrlTitle": "Manage Pages URL history",
+  "historySearch": "Search history values",
+  "historyFilterAll": "All",
+  "historyFilterUntagged": "Untagged",
+  "historyNoMatched": "No matching history records",
+  "historyEmpty": "No history records",
+  "historyLastUsed": "Last used",
+  "historyUse": "Use",
+  "historyEditTags": "Edit tags",
+  "historyEditTagsPrompt": "Enter tags separated by comma, Chinese comma, space, or newline",
+  "historyDelete": "Delete"
 }
