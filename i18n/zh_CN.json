@@ -16,5 +16,9 @@
   "historyUse": "使用",
   "historyEditTags": "编辑标签",
   "historyEditTagsPrompt": "输入标签，支持逗号、顿号、空格或换行分隔",
-  "historyDelete": "删除"
+  "historyDelete": "删除",
+  "historyEditTagsHint": "支持逗号、顿号、分号、空格或换行分隔",
+  "historyEditTagsPlaceholder": "输入标签...",
+  "historyEditTagsSave": "保存",
+  "historyEditTagsCancel": "取消"
 }

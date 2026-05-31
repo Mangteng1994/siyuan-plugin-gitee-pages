@@ -99,7 +99,7 @@ class PagesPublisher extends Plugin {
         const raw = Array.isArray(input) ? input.join("\n") : String(input || "");
         const seen = new Set();
         const tags = [];
-        raw.split(/[,\uFF0C\u3001\s]+/).forEach((part) => {
+        raw.split(/[,\uFF0C\u3001;\uFF1B\s]+/).forEach((part) => {
             const tag = String(part || "").trim();
             if (!tag || seen.has(tag)) return;
             seen.add(tag);
@@ -290,7 +290,7 @@ class PagesPublisher extends Plugin {
         return item;
     }
 
-    updateHistoryItemTags(platform, type, id, tags) {
+    async updateHistoryItemTags(platform, type, id, tags) {
         const normalizedType = this.normalizeHistoryType(type);
         const data = this.data[STORAGE_KEY] || (this.data[STORAGE_KEY] = this.defaultConfig());
         const plat = this.ensurePlatformHistoryConfig(data, platform);
@@ -301,7 +301,7 @@ class PagesPublisher extends Plugin {
         item.tags = this.parseTags(tags);
         item.updatedAt = new Date().toISOString();
         plat[historyKey] = items;
-        this.persistConfig(data);
+        await this.persistConfigAndWait(data);
         return true;
     }
 
@@ -517,14 +517,46 @@ class PagesPublisher extends Plugin {
                         editBtn.className = "pp-history-item__select";
                         editBtn.textContent = this.t("historyEditTags", "编辑标签");
                         editBtn.addEventListener("click", () => {
-                            const next = window.prompt(
-                                that.t("historyEditTagsPrompt", "输入标签，支持逗号、顿号、空格或换行分隔"),
-                                (item.tags || []).join(", "),
-                            );
-                            if (next === null) return;
-                            that.updateHistoryItemTags(key, normalizedType, item.id, that.parseTags(next));
-                            that.refreshHistoryRefs(key, normalizedType, refs);
-                            render();
+                            // Remove any existing inline editor
+                            const existing = row.querySelector(".pp-history-edit-tags");
+                            if (existing) { existing.remove(); return; }
+                            const editWrap = document.createElement("div");
+                            editWrap.className = "pp-history-edit-tags";
+                            const hint = document.createElement("div");
+                            hint.className = "pp-history-edit-tags__hint";
+                            hint.textContent = that.t("historyEditTagsHint", "支持逗号、顿号、分号、空格或换行分隔");
+                            const input = document.createElement("input");
+                            input.type = "text";
+                            input.className = "pp-history-edit-tags__input";
+                            input.value = (item.tags || []).join(", ");
+                            input.placeholder = that.t("historyEditTagsPlaceholder", "输入标签...");
+                            const actions = document.createElement("div");
+                            actions.className = "pp-history-edit-tags__actions";
+                            const saveBtn = document.createElement("button");
+                            saveBtn.type = "button";
+                            saveBtn.className = "pp-history-edit-tags__save";
+                            saveBtn.textContent = that.t("historyEditTagsSave", "保存");
+                            const cancelBtn = document.createElement("button");
+                            cancelBtn.type = "button";
+                            cancelBtn.className = "pp-history-edit-tags__cancel";
+                            cancelBtn.textContent = that.t("historyEditTagsCancel", "取消");
+                            saveBtn.addEventListener("click", async () => {
+                                const tags = that.parseTags(input.value);
+                                await that.updateHistoryItemTags(key, normalizedType, item.id, tags);
+                                that.refreshHistoryRefs(key, normalizedType, refs);
+                                render();
+                            });
+                            cancelBtn.addEventListener("click", () => {
+                                editWrap.remove();
+                            });
+                            actions.appendChild(saveBtn);
+                            actions.appendChild(cancelBtn);
+                            editWrap.appendChild(hint);
+                            editWrap.appendChild(input);
+                            editWrap.appendChild(actions);
+                            row.appendChild(editWrap);
+                            input.focus();
+                            input.select();
                         });
                         const delBtn = document.createElement("button");
                         delBtn.type = "button";
@@ -1607,7 +1639,7 @@ class PagesPublisher extends Plugin {
             title: "",
             description: "",
             direction: "row",
-            className: "pp-field pp-section-share",
+            className: "pp-field pp-custom-host pp-section-share",
             createActionElement: () => {
                 const wrap = this.buildShareListElement();
                 this.shareListContainer = wrap;
@@ -2130,6 +2162,7 @@ class PagesPublisher extends Plugin {
 
     async publishDoc({ docId, title, forceSlug, platform, source = "current", skipAutoPush = false }) {
         const cfg = this.currentConfig(platform);
+        let repoReady = null;
         this.setProgress(3, "检查发布配置...");
 
         if (!cfg.repoPath) {
@@ -2141,6 +2174,16 @@ class PagesPublisher extends Plugin {
             this.finishProgress(`发布失败：路径不存在 ${cfg.repoPath}`, true);
             showMessage(`路径不存在: ${cfg.repoPath}`, 4000, "error");
             return null;
+        }
+
+        if (cfg.autoCommit && !skipAutoPush) {
+            repoReady = await this.ensurePublishRepoReady(cfg.repoPath, {
+                platform: cfg.platform,
+            });
+            if (!repoReady.ok) {
+                this.finishProgress("发布前检查未通过：Git 仓库未就绪", true);
+                return null;
+            }
         }
 
         const baseTitle = title || "Untitled";
@@ -2279,7 +2322,7 @@ class PagesPublisher extends Plugin {
             // Fire-and-forget non-blocking push
             const that = this;
             setTimeout(() => {
-                that._tryAutoPush(record, cfg.repoPath, exportedName || baseTitle, slug, sharedAssetsChanged)
+                that._tryAutoPush(record, cfg.repoPath, exportedName || baseTitle, slug, sharedAssetsChanged, repoReady)
                     .catch(() => {});
             }, 100);
         } else if (cfg.autoCommit && skipAutoPush) {
@@ -2299,11 +2342,12 @@ class PagesPublisher extends Plugin {
         };
     }
 
-    async _tryAutoPush(record, repoPath, title, slug, sharedAssetsChanged) {
+    async _tryAutoPush(record, repoPath, title, slug, sharedAssetsChanged, repoReady) {
         try {
             await this.gitPush(repoPath, title, slug, undefined, {
                 includeSharedAssets: sharedAssetsChanged,
                 allowPushExistingAhead: false,
+                repoReady,
             });
             const successRecord = await this.upsertShareRecord({
                 ...record,
@@ -3389,44 +3433,288 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         return out.join("\n");
     }
 
-    async runPublishPrecheck(repoPath) {
-        const o = { cwd: repoPath };
-        const issues = [];
+    normalizeBranchName(name) {
+        const value = String(name || "").trim();
+        if (!value || value === "HEAD") return "";
+        return value;
+    }
+
+    parseRemoteBranchRef(ref) {
+        const value = String(ref || "").trim();
+        const match = value.match(/^([^/]+)\/(.+)$/);
+        if (!match) {
+            return {
+                upstreamRef: value,
+                remoteName: "",
+                remoteBranch: "",
+            };
+        }
+        return {
+            upstreamRef: value,
+            remoteName: match[1],
+            remoteBranch: match[2],
+        };
+    }
+
+    quoteWindowsArg(value) {
+        const text = String(value || "");
+        if (!text) return '""';
+        return '"' + text.replace(/"/g, '""') + '"';
+    }
+
+    buildCloneRecoveryCommands(repoPath, originUrl) {
+        const dir = String(repoPath || "").trim();
+        const parentDir = dir ? path.dirname(dir) : "<上级目录>";
+        const currentName = dir ? path.basename(dir) : "<当前目录名>";
+        const origin = String(originUrl || "").trim() || "<远端仓库地址>";
+        return [
+            `cd /d ${this.quoteWindowsArg(parentDir)}`,
+            `ren ${this.quoteWindowsArg(currentName)} ${this.quoteWindowsArg(`${currentName}_bak`)}`,
+            `git clone ${origin} ${this.quoteWindowsArg(currentName)}`,
+        ].join("\n");
+    }
+
+    showRepoReadyFailure(title, message, repoInfo) {
+        showMessage(message, 7000, "error");
+        this.createModal({
+            title,
+            description: message,
+            bodyBuilder: ({ body }) => {
+                const log = document.createElement("pre");
+                log.className = "pp-modal__log";
+                const lines = [];
+                if (repoInfo?.repoPath) lines.push(`仓库路径: ${repoInfo.repoPath}`);
+                if (repoInfo?.originUrl) lines.push(`origin: ${repoInfo.originUrl}`);
+                if (repoInfo?.localBranch) lines.push(`本地分支: ${repoInfo.localBranch}`);
+                if (repoInfo?.upstreamRef) lines.push(`上游分支: ${repoInfo.upstreamRef}`);
+                if (repoInfo?.remoteDefaultRef) lines.push(`远端默认分支: ${repoInfo.remoteDefaultRef}`);
+                if (typeof repoInfo?.remoteHasCommits === "boolean") lines.push(`远端是否已有提交: ${repoInfo.remoteHasCommits ? "是" : "否"}`);
+                if (typeof repoInfo?.hasHead === "boolean") lines.push(`本地是否已有提交: ${repoInfo.hasHead ? "是" : "否"}`);
+                if (typeof repoInfo?.isDirty === "boolean") lines.push(`工作区是否有未提交修改: ${repoInfo.isDirty ? "是" : "否"}`);
+                if (repoInfo?.details) {
+                    if (lines.length) lines.push("");
+                    lines.push(repoInfo.details);
+                }
+                log.textContent = lines.join("\n").trim() || message;
+                body.appendChild(log);
+            },
+        });
+    }
+
+    async inspectPublishRepo(repoPath) {
+        const repoInfo = {
+            ok: false,
+            repoPath,
+            isGitRepo: false,
+            hasOrigin: false,
+            originUrl: "",
+            localBranch: "",
+            hasHead: false,
+            isDirty: false,
+            hasUpstream: false,
+            upstreamRef: "",
+            remoteName: "origin",
+            remoteBranch: "",
+            remoteDefaultRef: "",
+            remoteHasCommits: false,
+            issueType: "",
+            message: "",
+        };
+        if (!repoPath || !fs.existsSync(repoPath)) {
+            repoInfo.issueType = "REPO_PATH_MISSING";
+            repoInfo.message = "配置的本地仓库路径不存在，请重新选择仓库路径。";
+            return repoInfo;
+        }
+        const o = { cwd: repoPath, timeoutMs: 30_000 };
         try {
             await this.runCommand("git --version", o);
         } catch (err) {
-            issues.push("未检测到 Git CLI，请先安装 Git 并确保命令行可用。");
-            return { ok: false, issues };
+            repoInfo.issueType = "GIT_NOT_FOUND";
+            repoInfo.message = "未检测到 Git CLI，请先安装 Git 并确保命令行可用。";
+            return repoInfo;
         }
         try {
             await this.runCommand("git rev-parse --git-dir", o);
+            repoInfo.isGitRepo = true;
         } catch (err) {
-            issues.push("配置的路径不是 Git 仓库。");
+            repoInfo.issueType = "NOT_GIT_REPO";
+            repoInfo.message = "配置的路径不是 Git 仓库。若这是已有远端 Pages 仓库，建议先 git clone 远端仓库，再在插件中选择 clone 后的目录。";
+            return repoInfo;
         }
         try {
-            await this.getUpstreamInfo(o);
+            const { stdout } = await this.runCommand("git remote get-url origin", o);
+            repoInfo.originUrl = String(stdout || "").trim();
+            repoInfo.hasOrigin = !!repoInfo.originUrl;
         } catch (err) {
-            issues.push("当前分支没有配置上游分支，无法自动 pull/push。");
+            repoInfo.issueType = "ORIGIN_MISSING";
+            repoInfo.message = "当前仓库没有配置远端 origin，请先配置远端仓库地址。";
+            return repoInfo;
         }
-        return { ok: issues.length === 0, issues };
+        try {
+            const { stdout } = await this.runCommand("git branch --show-current", o);
+            repoInfo.localBranch = this.normalizeBranchName(stdout);
+        } catch (err) { /* ignore */ }
+        if (!repoInfo.localBranch) {
+            try {
+                const { stdout } = await this.runCommand("git rev-parse --abbrev-ref HEAD", o);
+                repoInfo.localBranch = this.normalizeBranchName(stdout);
+            } catch (err) { /* ignore */ }
+        }
+        try {
+            await this.runCommand("git rev-parse --verify HEAD", o);
+            repoInfo.hasHead = true;
+        } catch (err) {
+            repoInfo.hasHead = false;
+        }
+        try {
+            const { stdout } = await this.runCommand("git status --porcelain", o);
+            repoInfo.isDirty = !!String(stdout || "").trim();
+        } catch (err) {
+            repoInfo.isDirty = false;
+        }
+        try {
+            const { stdout } = await this.runCommand("git rev-parse --abbrev-ref --symbolic-full-name @{u}", o);
+            const parsed = this.parseRemoteBranchRef(stdout);
+            repoInfo.upstreamRef = parsed.upstreamRef;
+            repoInfo.remoteName = parsed.remoteName || repoInfo.remoteName;
+            repoInfo.remoteBranch = parsed.remoteBranch || repoInfo.remoteBranch;
+            repoInfo.hasUpstream = !!(parsed.remoteName && parsed.remoteBranch);
+        } catch (err) {
+            repoInfo.hasUpstream = false;
+        }
+        try {
+            await this.runCommand(`git fetch --prune ${repoInfo.remoteName || "origin"}`, o);
+        } catch (err) {
+            repoInfo.issueType = "FETCH_FAILED";
+            repoInfo.message = "无法获取 origin 最新状态，请检查网络、权限或 Git 代理配置后重试。";
+            return repoInfo;
+        }
+        try {
+            const { stdout } = await this.runCommand("git symbolic-ref refs/remotes/origin/HEAD --short", o);
+            repoInfo.remoteDefaultRef = String(stdout || "").trim();
+        } catch (err) { /* ignore */ }
+        if (!repoInfo.remoteDefaultRef) {
+            for (const fallbackRef of ["origin/main", "origin/master"]) {
+                try {
+                    await this.runCommand(`git rev-parse --verify ${fallbackRef}`, o);
+                    repoInfo.remoteDefaultRef = fallbackRef;
+                    break;
+                } catch (verifyErr) { /* ignore */ }
+            }
+        }
+        repoInfo.remoteHasCommits = !!repoInfo.remoteDefaultRef;
+        repoInfo.ok = true;
+        return repoInfo;
+    }
+
+    async ensurePublishRepoReady(repoPath, options = {}) {
+        const repoInfo = await this.inspectPublishRepo(repoPath);
+        const silent = !!options.silent;
+        const fail = (issueType, message, details = "") => {
+            const result = { ok: false, issueType, message, repoInfo: { ...repoInfo, issueType, message, details } };
+            if (!silent) this.showRepoReadyFailure("发布前检查未通过", message, result.repoInfo);
+            return result;
+        };
+        if (!repoInfo.ok) {
+            return fail(repoInfo.issueType || "REPO_NOT_READY", repoInfo.message || "Git 仓库未就绪。", repoInfo.details || "");
+        }
+        if (!repoInfo.isGitRepo) {
+            return fail("NOT_GIT_REPO", "配置的路径不是 Git 仓库。若这是已有远端 Pages 仓库，建议先 git clone 远端仓库，再在插件中选择 clone 后的目录。");
+        }
+        if (!repoInfo.hasOrigin) {
+            return fail("ORIGIN_MISSING", "当前仓库没有配置远端 origin，请先配置远端仓库地址。");
+        }
+        if (repoInfo.hasUpstream) {
+            return {
+                ok: true,
+                setupUpstreamOnPush: false,
+                remoteName: repoInfo.remoteName || "origin",
+                localBranch: repoInfo.localBranch || repoInfo.remoteBranch || "main",
+                remoteBranch: repoInfo.remoteBranch || repoInfo.localBranch || "main",
+                repoInfo,
+            };
+        }
+        if (!repoInfo.remoteHasCommits) {
+            return {
+                ok: true,
+                setupUpstreamOnPush: true,
+                remoteName: repoInfo.remoteName || "origin",
+                localBranch: repoInfo.localBranch || "main",
+                remoteBranch: repoInfo.localBranch || "main",
+                repoInfo,
+            };
+        }
+        if (!repoInfo.hasHead && !repoInfo.isDirty) {
+            const remoteRef = repoInfo.remoteDefaultRef || "origin/main";
+            const parsed = this.parseRemoteBranchRef(remoteRef);
+            const branchName = repoInfo.localBranch || parsed.remoteBranch || "main";
+            const o = { cwd: repoPath, timeoutMs: 30_000 };
+            try {
+                await this.runCommand(`git switch -C ${branchName} --track ${remoteRef}`, o);
+            } catch (switchErr) {
+                try {
+                    await this.runCommand(`git checkout -B ${branchName} ${remoteRef}`, o);
+                    await this.runCommand(`git branch --set-upstream-to=${remoteRef} ${branchName}`, o);
+                } catch (checkoutErr) {
+                    return fail("UPSTREAM_INIT_FAILED", `无法基于远端分支 ${remoteRef} 初始化本地分支，请先在命令行检查仓库状态后重试。`, this.formatError(checkoutErr));
+                }
+            }
+            const refreshed = await this.inspectPublishRepo(repoPath);
+            if (refreshed.ok && refreshed.hasUpstream) {
+                return {
+                    ok: true,
+                    setupUpstreamOnPush: false,
+                    remoteName: refreshed.remoteName || parsed.remoteName || "origin",
+                    localBranch: refreshed.localBranch || branchName,
+                    remoteBranch: refreshed.remoteBranch || parsed.remoteBranch || branchName,
+                    repoInfo: refreshed,
+                };
+            }
+            return fail("UPSTREAM_INIT_FAILED", `已尝试基于 ${remoteRef} 初始化本地分支，但仍未建立 upstream，请先手动检查仓库。`);
+        }
+        const dangerMessage = [
+            "当前本地目录只是手动添加了远端地址，但不是从远端 clone 得到的仓库；远端仓库已经有其他电脑推送的内容。为避免覆盖远端文件，建议先备份当前目录，然后重新 clone 远端仓库。",
+            "",
+            "推荐操作：",
+            this.buildCloneRecoveryCommands(repoPath, repoInfo.originUrl),
+            "",
+            "完成后，在插件中继续选择 clone 后的目录。",
+        ].join("\n");
+        return fail("UPSTREAM_MISSING", dangerMessage, dangerMessage);
+    }
+
+    async runPublishPrecheck(repoPath) {
+        const repoInfo = await this.inspectPublishRepo(repoPath);
+        const issues = [];
+        if (!repoInfo.ok && repoInfo.issueType === "GIT_NOT_FOUND") {
+            issues.push(repoInfo.message || "未检测到 Git CLI，请先安装 Git 并确保命令行可用。");
+            return { ok: false, issues, repoInfo };
+        }
+        if (!repoInfo.ok && repoInfo.issueType === "REPO_PATH_MISSING") {
+            issues.push(repoInfo.message || "配置的本地仓库路径不存在，请重新选择仓库路径。");
+            return { ok: false, issues, repoInfo };
+        }
+        if (!repoInfo.isGitRepo) issues.push("配置的路径不是 Git 仓库。");
+        if (repoInfo.isGitRepo && !repoInfo.hasOrigin) issues.push("当前仓库没有配置远端 origin，请先配置远端仓库地址。");
+        if (repoInfo.issueType == "FETCH_FAILED") issues.push(repoInfo.message || "无法获取 origin 最新状态，请检查网络、权限或 Git 代理配置后重试。");
+        return { ok: issues.length === 0, issues, repoInfo };
     }
 
     async getUpstreamInfo(options) {
         const { stdout: branchStdout } = await this.runCommand("git rev-parse --abbrev-ref HEAD", options);
-        const localBranch = String(branchStdout || "").trim();
+        const localBranch = this.normalizeBranchName(branchStdout);
         const { stdout: upstreamStdout } = await this.runCommand("git rev-parse --abbrev-ref --symbolic-full-name @{u}", options);
-        const upstreamRef = String(upstreamStdout || "").trim();
-        const idx = upstreamRef.indexOf("/");
-        if (!upstreamRef || idx <= 0) {
+        const parsed = this.parseRemoteBranchRef(upstreamStdout);
+        if (!parsed.remoteName || !parsed.remoteBranch) {
             const err = new Error("UPSTREAM_MISSING");
             err.gitPushErrorType = "UPSTREAM_MISSING";
             throw err;
         }
         return {
             localBranch,
-            upstreamRef,
-            remoteName: upstreamRef.slice(0, idx),
-            remoteBranch: upstreamRef.slice(idx + 1),
+            upstreamRef: parsed.upstreamRef,
+            remoteName: parsed.remoteName,
+            remoteBranch: parsed.remoteBranch,
         };
     }
 
@@ -3558,7 +3846,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         const precheck = await this.runPublishPrecheck(repoPath);
         if (!precheck.ok) {
             const err = new Error(precheck.issues.join("\n"));
-            err.gitPushErrorType = "UPSTREAM_MISSING";
+            err.gitPushErrorType = precheck.repoInfo?.issueType || "REPO_NOT_READY";
             await this.markRepoPushStatus(repoPath, "failed", err.gitPushErrorType, precheck.issues.join("\n"));
             this.finishProgress("发布前检查未通过", true);
             this.createModal({
@@ -3573,8 +3861,16 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             });
             throw err;
         }
+        const repoReady = await this.ensurePublishRepoReady(repoPath, { silent: false });
+        if (!repoReady.ok) {
+            const err = new Error(repoReady.message || "Git 仓库未就绪。");
+            err.gitPushErrorType = repoReady.issueType || "UPSTREAM_MISSING";
+            await this.markRepoPushStatus(repoPath, "failed", err.gitPushErrorType, repoReady.message || "Git 仓库未就绪。");
+            this.finishProgress("发布前检查未通过：Git 仓库未就绪", true);
+            throw err;
+        }
         try {
-            await this.runGitPushWithRetry(o);
+            await this.runGitPushWithRetry({ ...o, repoReady });
             await this.markRepoPushStatus(repoPath, "success", "", "");
             this.completePushProgress("远程补推成功");
             showMessage("远程补推成功", 3000, "info");
@@ -3859,7 +4155,13 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             return "Git 暂存失败：发布目录在本地仓库中不存在，且未被 Git 跟踪。请检查分享记录中的目录名是否与实际目录一致，或重新发布该文档后再同步。";
         }
         if (errorType === "UPSTREAM_MISSING") {
-            return "当前分支没有配置上游分支。请先在仓库里设置 upstream，再重新推送。";
+            return [
+                "当前本地目录只是手动添加了远端地址，但本地分支没有跟踪 origin/main 或 origin/master。若远端仓库已有其他电脑推送的文件，建议先 clone 远端仓库，再在插件中选择 clone 后的目录。",
+                "推荐命令：",
+                "cd /d <上级目录>",
+                "ren <当前目录名> <当前目录名>_bak",
+                "git clone <远端仓库地址> <当前目录名>",
+            ].join("\n");
         }
         if (errorType === "REBASE_CONFLICT") {
             return "同步远程时发生 rebase 冲突。请先解决冲突文件，再继续推送。";
@@ -3976,14 +4278,23 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     async gitPush(repoPath, title, scopeDir, commitMessage, pushOptions = {}) {
         let committed = false;
         try {
-            const o = { cwd: repoPath, includeSharedAssets: !!pushOptions.includeSharedAssets };
+            const repoReady = pushOptions.repoReady || await this.ensurePublishRepoReady(repoPath, { silent: true });
+            const o = { cwd: repoPath, includeSharedAssets: !!pushOptions.includeSharedAssets, repoReady };
             const precheck = await this.runPublishPrecheck(repoPath);
             if (!precheck.ok) {
                 const error = new Error(precheck.issues.join("\n"));
-                error.gitPushErrorType = "UPSTREAM_MISSING";
+                error.gitPushErrorType = precheck.repoInfo?.issueType || "REPO_NOT_READY";
+                throw error;
+            }
+            if (!repoReady.ok) {
+                const error = new Error(repoReady.message || "Git 仓库未就绪。");
+                error.gitPushErrorType = repoReady.issueType || "UPSTREAM_MISSING";
                 throw error;
             }
             await this.runCommand("git rev-parse --git-dir", o);
+            if (repoReady.setupUpstreamOnPush && !repoReady.repoInfo?.localBranch && repoReady.localBranch) {
+                await this.runCommand(`git checkout -B ${repoReady.localBranch}`, o);
+            }
             this.setProgress(82, "Git 暂存变更...");
             await this.stagePublishedPaths(repoPath, scopeDir, o);
             let changed=false;
@@ -4044,10 +4355,14 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     }
 
     async runGitPushWithRetry(options) {
-        const attempts = [
-            "git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
-            "git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push",
-        ];
+        const repoReady = options?.repoReady || {};
+        const basePush = repoReady.setupUpstreamOnPush
+            ? `git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push -u ${repoReady.remoteName || "origin"} ${repoReady.localBranch || "main"}`
+            : "git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push";
+        const fallbackPush = repoReady.setupUpstreamOnPush
+            ? `git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push -u ${repoReady.remoteName || "origin"} ${repoReady.localBranch || "main"}`
+            : "git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 push";
+        const attempts = [basePush, fallbackPush];
         let lastErr = null;
         for (const cmd of attempts) {
             try {
@@ -4057,7 +4372,7 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
             } catch (err) {
                 lastErr = err;
                 const errorType = this.classifyGitPushError(err);
-                if (errorType === "REMOTE_AHEAD" || errorType === "AUTH_ERROR" || errorType === "SECRET_PUSH_PROTECTION") {
+                if (errorType === "REMOTE_AHEAD" || errorType === "AUTH_ERROR" || errorType === "SECRET_PUSH_PROTECTION" || errorType === "UPSTREAM_MISSING") {
                     err.gitPushErrorType = errorType;
                     throw err;
                 }

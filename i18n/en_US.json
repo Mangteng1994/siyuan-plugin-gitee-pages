@@ -16,5 +16,9 @@
   "historyUse": "Use",
   "historyEditTags": "Edit tags",
   "historyEditTagsPrompt": "Enter tags separated by comma, Chinese comma, space, or newline",
-  "historyDelete": "Delete"
+  "historyDelete": "Delete",
+  "historyEditTagsHint": "Separate tags with commas, semicolons, spaces, or newlines",
+  "historyEditTagsPlaceholder": "Enter tags...",
+  "historyEditTagsSave": "Save",
+  "historyEditTagsCancel": "Cancel"
 }

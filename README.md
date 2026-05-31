@@ -59,7 +59,7 @@ repo root/
 ## Notes
 
 - Requires Git CLI
-- Repo path must be a locally cloned directory
+- Repo path is best set to a locally cloned Pages repo; before export, the plugin now checks Git status and blocks unsafe auto-push cases
 - GitHub Pages deploys automatically; Gitee Pages (free) needs manual "Update" click
 - Import images as SiYuan resources or use an image hosting plugin
 - Switching SiYuan themes requires re-publishing to sync styles
@@ -67,6 +67,8 @@ repo root/
 ## Troubleshooting
 
 **Push conflict**: Run `git pull --rebase` in the repo directory, then retry.
+
+**Upstream missing / manual `git init + remote add`**: If the remote already has files from another computer, back up the current folder and re-clone the remote repo, or let the plugin safely initialize tracking only when the local repo has no commits and the worktree is clean.
 
 **Auth error**: Use SSH keys or Personal Access Token for GitHub.
 
@@ -76,22 +78,19 @@ repo root/
 
 ## Changelog
 
-### v1.0.6
-
-- **Settings layout fix**: Inputs, history buttons, platform cards, and publish button now share one stable right edge without horizontal overflow.
-- **Push progress fix**: Successful push, sync-then-push, force push, and no-change skip paths now finish at 100% and auto-dismiss.
-- **Tagged history**: Repo path and Pages URL history entries now support user-defined tags, search, tag filtering, use, edit, and delete actions.
-- **Config migration**: Older string or `{ path/url }` history records migrate to normalized `{ id, value, tags, createdAt, updatedAt, lastUsedAt }` records.
-
 ### v1.0.5
 
-- **Multi-repo / multi-URL history**: Each platform saves a history of repo paths and Pages URLs. Switch or manage them in settings.
-- **Open config directory**: Button in settings to open the plugin data directory for manual `pages-pub-config` editing.
-- **Share list auto-sync**: After sync/pull/push, automatically scan local repo directories and reconcile with share records.
-- **`syncRemoteThenPush` improvements**: Checks workspace cleanliness before pull; detects and aborts rebase conflicts with clear prompts.
-- **Delete share refresh fix**: Share list now refreshes immediately after deleting a record.
-- **TOC fixes**: Correct scroll-to-heading behavior, proper active heading highlight, mobile collapse with correct `aria-expanded` sync.
-- **Refresh button**: Reloads `pages-pub-config` from disk and syncs document tree share markers.
+- Add publish-time Git repo inspection before exporting files, so unsafe no-upstream repos fail early instead of after local files are written.
+- Support safe first-push `git push -u origin <branch>` for empty remotes, and safe remote-tracking branch initialization when the remote already has commits but the local repo is still clean with no commits.
+- Improve no-upstream error hints with re-clone guidance for manually initialized folders pointing at an existing remote Pages repo.
+- Fix share list alignment with the main config area.
+- Replace tag editing prompt with an inline editor and persist tag changes reliably.
+- Support semicolons as a tag separator.
+- Multi-repo / multi-URL history: each platform saves a history of repo paths and Pages URLs for quick switching and management.
+- Open config directory: button in settings to open the plugin data directory for manual `pages-pub-config` editing.
+- Share list auto-sync after pull/push and refresh tree share markers from disk.
+- `syncRemoteThenPush` improvements: check workspace cleanliness before pull and abort rebase conflicts with clear prompts.
+- TOC and delete-refresh fixes, plus push progress now reaches 100% on success/skip/sync paths.
 
 ## License
 
