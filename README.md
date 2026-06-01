@@ -78,7 +78,7 @@ repo root/
 
 ## Changelog
 
-### v1.0.5
+### v1.0.6
 
 - Add publish-time Git repo inspection before exporting files, so unsafe no-upstream repos fail early instead of after local files are written.
 - Support safe first-push `git push -u origin <branch>` for empty remotes, and safe remote-tracking branch initialization when the remote already has commits but the local repo is still clean with no commits.
