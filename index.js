@@ -3124,6 +3124,8 @@ function initPagesPubToc() {
   }
 
   var activeId = "";
+  var suppressTocAutoScroll = false;
+  var suppressTocAutoScrollTimer = null;
 
   function getTocScrollContainer() {
     var candidates = [
@@ -3157,11 +3159,33 @@ function initPagesPubToc() {
     }
   }
 
-  function setActive(id) {
+  function beginTocDrivenPageScroll() {
+    suppressTocAutoScroll = true;
+    if (suppressTocAutoScrollTimer) {
+      clearTimeout(suppressTocAutoScrollTimer);
+    }
+    suppressTocAutoScrollTimer = setTimeout(function() {
+      suppressTocAutoScroll = false;
+      suppressTocAutoScrollTimer = null;
+    }, 1200);
+  }
+
+  function extendTocAutoScrollSuppression() {
+    if (!suppressTocAutoScroll) return;
+    if (suppressTocAutoScrollTimer) {
+      clearTimeout(suppressTocAutoScrollTimer);
+    }
+    suppressTocAutoScrollTimer = setTimeout(function() {
+      suppressTocAutoScroll = false;
+      suppressTocAutoScrollTimer = null;
+    }, 220);
+  }
+
+  function setActive(id, options) {
     if (!id) return;
+    options = options || {};
 
     var activeLink = null;
-    var changed = id !== activeId;
     activeId = id;
 
     headings.forEach(function(item) {
@@ -3170,7 +3194,8 @@ function initPagesPubToc() {
       if (matched) activeLink = item.link;
     });
 
-    if (activeLink) {
+    var shouldScrollToc = options.scrollToc !== false && !suppressTocAutoScroll;
+    if (activeLink && shouldScrollToc) {
       requestAnimationFrame(function() {
         ensureTocLinkVisible(activeLink);
       });
@@ -3196,7 +3221,10 @@ function initPagesPubToc() {
     if (!scrollTicking) {
       requestAnimationFrame(function() {
         var topHeading = findTopmostHeading();
-        if (topHeading && topHeading.node.id) setActive(topHeading.node.id);
+        if (topHeading && topHeading.node.id) {
+          setActive(topHeading.node.id, { scrollToc: !suppressTocAutoScroll });
+          extendTocAutoScrollSuppression();
+        }
         scrollTicking = false;
       });
       scrollTicking = true;
@@ -3210,11 +3238,12 @@ function initPagesPubToc() {
       var target = document.getElementById(item.id);
       if (!target) return;
       var top = target.getBoundingClientRect().top + window.pageYOffset - 80;
+      beginTocDrivenPageScroll();
       window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
       if (history && typeof history.replaceState === "function") {
         history.replaceState(null, "", "#" + encodeURIComponent(item.id));
       }
-      setActive(item.id);
+      setActive(item.id, { scrollToc: false });
       // Close TOC on mobile after clicking
       if (window.innerWidth <= 1100) {
         toc.classList.remove("is-open");
@@ -3251,7 +3280,7 @@ function initPagesPubToc() {
         });
         var topEntry = intersecting[0];
         if (topEntry.target && topEntry.target.id) {
-          setActive(topEntry.target.id);
+          setActive(topEntry.target.id, { scrollToc: !suppressTocAutoScroll });
         }
       }
     }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
