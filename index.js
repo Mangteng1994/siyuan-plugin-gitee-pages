@@ -3125,12 +3125,56 @@ function initPagesPubToc() {
 
   var activeId = "";
 
+  function getTocScrollContainer() {
+    var candidates = [
+      list,
+      list ? list.parentElement : null,
+      toc
+    ].filter(Boolean);
+
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      if (el.scrollHeight > el.clientHeight + 1) {
+        return el;
+      }
+    }
+    return toc;
+  }
+
+  function ensureTocLinkVisible(link) {
+    if (!link) return;
+    var scroller = getTocScrollContainer();
+    if (!scroller) return;
+
+    var scrollerRect = scroller.getBoundingClientRect();
+    var linkRect = link.getBoundingClientRect();
+    var margin = 16;
+
+    if (linkRect.top < scrollerRect.top + margin) {
+      scroller.scrollTop -= (scrollerRect.top + margin - linkRect.top);
+    } else if (linkRect.bottom > scrollerRect.bottom - margin) {
+      scroller.scrollTop += (linkRect.bottom - (scrollerRect.bottom - margin));
+    }
+  }
+
   function setActive(id) {
-    if (!id || id === activeId) return;
+    if (!id) return;
+
+    var activeLink = null;
+    var changed = id !== activeId;
     activeId = id;
+
     headings.forEach(function(item) {
-      item.link.classList.toggle("active", item.id === id);
+      var matched = item.id === id;
+      item.link.classList.toggle("active", matched);
+      if (matched) activeLink = item.link;
     });
+
+    if (activeLink) {
+      requestAnimationFrame(function() {
+        ensureTocLinkVisible(activeLink);
+      });
+    }
   }
 
   function findTopmostHeading() {
@@ -3170,6 +3214,7 @@ function initPagesPubToc() {
       if (history && typeof history.replaceState === "function") {
         history.replaceState(null, "", "#" + encodeURIComponent(item.id));
       }
+      setActive(item.id);
       // Close TOC on mobile after clicking
       if (window.innerWidth <= 1100) {
         toc.classList.remove("is-open");
