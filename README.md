@@ -30,8 +30,9 @@ Both platforms can be configured simultaneously and switched at any time.
 
 1. Restart SiYuan — icon appears in the top toolbar
 2. Click icon → choose Gitee or GitHub → fill in local repo path and Pages URL
-3. Open a note → click icon → one-click publish
-4. Visit your Pages URL: GitHub auto-deploys in 1-3 min; Gitee requires manual "Update"
+3. If you want outlinked notes to become standalone pages opened in a new tab, enable "Separate outlink pages"
+4. Open a note → click icon → one-click publish
+5. Visit your Pages URL: GitHub auto-deploys in 1-3 min; Gitee requires manual "Update"
 
 ## Features
 
@@ -41,6 +42,7 @@ Both platforms can be configured simultaneously and switched at any time.
 - Full Markdown: headings, lists, code blocks, tables, blockquotes, images, links
 - Auto-attaches enabled CSS/JS snippets and Petals
 - Auto Git: add → commit → push
+- Optional "Separate outlink pages": keep the main note clean, export outlinked notes as standalone pages, and open note links in a new tab
 - Publish history with re-publish, delete, manual push, and push status tracking
 - Multi-repo / multi-URL history management with custom tags and filtering
 - Open config directory for manual editing of `pages-pub-config`
@@ -51,6 +53,7 @@ Both platforms can be configured simultaneously and switched at any time.
 ```
 repo root/
 ├── pages-pub-assets/          # Shared assets (theme CSS, Protyle JS)
+│   └── link-icon/             # Published when the link-icon plugin is installed
 ├── doc-directory/             # One subdirectory per note
 │   ├── index.html
 │   └── assets/...             # Linked resources

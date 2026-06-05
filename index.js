@@ -56,6 +56,7 @@ class PagesPublisher extends Plugin {
             gitee: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
             github: { repoPath: "", pagesUrl: "", repoPathHistory: [], pagesUrlHistory: [] },
             autoCommit: true,
+            separateOutlinkPages: false,
             gitProxy: "",
             shares: [],
         };
@@ -81,6 +82,7 @@ class PagesPublisher extends Plugin {
             gitee: normalizePlatform(d.gitee),
             github: normalizePlatform(d.github),
             autoCommit: d.autoCommit !== false,
+            separateOutlinkPages: d.separateOutlinkPages === true,
             gitProxy: d.gitProxy || "",
             shares,
         };
@@ -956,6 +958,23 @@ class PagesPublisher extends Plugin {
         return wrap;
     }
 
+    createSeparateOutlinkPagesSwitch(data) {
+        const wrap = document.createElement("div");
+        wrap.className = "pp-switch-wrap";
+
+        const inp = document.createElement("input");
+        inp.type = "checkbox";
+        inp.className = "b3-switch pp-separate-outlinks-switch";
+        inp.checked = data.separateOutlinkPages === true;
+        inp.addEventListener("change", async () => {
+            data.separateOutlinkPages = inp.checked;
+            await this.persistConfigAndWait(data);
+        });
+
+        wrap.appendChild(inp);
+        return wrap;
+    }
+
     initTreeMarkerSync() {
         if (this.treeMarkerObserver) {
             this.treeMarkerObserver.disconnect();
@@ -1338,6 +1357,7 @@ class PagesPublisher extends Plugin {
             repoPath: pc.repoPath || "",
             pagesUrl: (pc.pagesUrl || "").replace(/\/+$/, ""),
             autoCommit: d.autoCommit !== false,
+            separateOutlinkPages: d.separateOutlinkPages === true,
             gitProxy: d.gitProxy || "",
         };
     }
@@ -1571,6 +1591,19 @@ class PagesPublisher extends Plugin {
                 return this.createCustomSettingField({
                     title: "自动 Git 推送",
                     actionElement: this.createAutoCommitSwitch(data),
+                    actionClassName: "pp-setting-control--switch",
+                });
+            },
+        });
+
+        this.setting.addItem({
+            title: "",
+            description: "",
+            className: "pp-field pp-custom-host pp-config-item pp-config-end pp-switch-row",
+            createActionElement: () => {
+                return this.createCustomSettingField({
+                    title: this.t("separateOutlinkPages", "出链页面单独跳转"),
+                    actionElement: this.createSeparateOutlinkPagesSwitch(data),
                     actionClassName: "pp-setting-control--switch",
                 });
             },
@@ -2160,7 +2193,16 @@ class PagesPublisher extends Plugin {
         }));
     }
 
-    async publishDoc({ docId, title, forceSlug, platform, source = "current", skipAutoPush = false }) {
+    async publishDoc({
+        docId,
+        title,
+        forceSlug,
+        platform,
+        source = "current",
+        skipAutoPush = false,
+        exportOutlinks = true,
+        outlinkParentDocId = "",
+    } = {}) {
         const cfg = this.currentConfig(platform);
         let repoReady = null;
         this.setProgress(3, "检查发布配置...");
@@ -2189,21 +2231,35 @@ class PagesPublisher extends Plugin {
         const baseTitle = title || "Untitled";
         let slug = forceSlug || this.fname(baseTitle);
         let targetDir = path.join(cfg.repoPath, slug);
-        const exportStartedAt = Date.now();
-        const buildToken = String(exportStartedAt);
+        const buildToken = String(Date.now());
+        const shouldSeparateOutlinks = cfg.separateOutlinkPages === true && exportOutlinks !== false;
+        const exportMerge = shouldSeparateOutlinks ? false : true;
+        const linkMap = {
+            byDocId: new Map(),
+            byBlockId: new Map(),
+        };
+        const generatedOutlinkSlugs = [];
+        let sharedAssetsChanged = false;
 
         this.setProgress(12, "导出 SiYuan HTML(SiYuan) 正文...");
         showMessage("导出 SiYuan HTML(SiYuan) 中...", 1800, "info");
 
-        const r = await fetchSyncPost("/api/export/exportHTML", {
-            id: docId,
-            pdf: false,
-            removeAssets: false,
-            merge: true,
-            savePath: "",
-        });
-        if (!r || r.code !== 0 || !r.data) {
-            const msg = r?.msg || "未知";
+        let exportedName = "";
+        let exportResult = null;
+        try {
+            exportResult = await this.exportDocumentToTarget({
+                docId,
+                title: baseTitle,
+                slug,
+                cfg,
+                targetDir,
+                buildToken,
+                merge: exportMerge,
+                linkMap,
+                enableLinkIconAssets: true,
+            });
+        } catch (err) {
+            const msg = this.formatError(err);
             if (source === "share") {
                 const error = new Error(`无法读取该文档，请打开原文档后重新发布。${msg ? ` (${msg})` : ""}`);
                 error._pagesMessageShown = true;
@@ -2211,79 +2267,77 @@ class PagesPublisher extends Plugin {
                 showMessage(error.message, 6000, "error");
                 throw error;
             }
-            this.finishProgress("导出失败: " + msg, true);
-            showMessage("导出失败: " + msg, 5000, "error");
+            this.finishProgress(`发布失败: ${msg}`, true);
+            showMessage(`发布失败: ${msg}`, 6000, "error");
             return null;
         }
-
-        const exportedName = (r.data.name || "").trim();
+        exportedName = exportResult.exportedName;
         const finalSlug = forceSlug || this.fname(exportedName || baseTitle);
         if (finalSlug !== slug) {
+            this.removeIfExists(targetDir);
             slug = finalSlug;
             targetDir = path.join(cfg.repoPath, slug);
-        }
-
-        this.setProgress(32, `准备本地目录: ${slug}`);
-        this.ensureEmptyDir(targetDir);
-        let resourceResult = r;
-        this.setProgress(42, "复制/导出原生资源文件...");
-        if (!this.copyNativeExportFolder(r.data.folder, targetDir)) {
-            resourceResult = await fetchSyncPost("/api/export/exportHTML", {
-                id: docId,
-                pdf: false,
-                removeAssets: false,
-                merge: true,
-                savePath: targetDir,
+            exportResult = await this.exportDocumentToTarget({
+                docId,
+                title: baseTitle,
+                slug,
+                cfg,
+                targetDir,
+                buildToken,
+                merge: exportMerge,
+                linkMap,
+                enableLinkIconAssets: true,
             });
-            if (!resourceResult || resourceResult.code !== 0 || !resourceResult.data) {
-                this.finishProgress("资源导出失败: " + (resourceResult?.msg || "未知"), true);
-                showMessage("资源导出失败: " + (resourceResult?.msg || "未知"), 5000, "error");
-                return null;
-            }
+            exportedName = exportResult.exportedName;
         }
+        sharedAssetsChanged = exportResult.sharedAssetsChanged;
 
-        this.setProgress(58, "生成 index.html...");
-            if (typeof r.data.content === "string" && r.data.content.trim()) {
-                fs.writeFileSync(
-                    path.join(targetDir, "index.html"),
-                    await this.buildSiYuanNativeHTML(r.data.content, exportedName || baseTitle, {
-                        sharedBase: `../${SHARED_ASSETS_DIR}`,
-                        buildToken,
-                        targetDir,
-                    }),
-                    "utf-8",
-                );
+        if (shouldSeparateOutlinks && exportResult.content) {
+            this.setProgress(58, "扫描出链并生成独立页面...");
+            const outlinkInfos = await this.collectOutlinkDocInfos(exportResult.content, docId);
+            for (const info of outlinkInfos) {
+                if (info.blockId) {
+                    linkMap.byBlockId.set(info.blockId, info.docId);
+                }
+                if (!info.isPrimary || linkMap.byDocId.has(info.docId)) continue;
+                const childSlug = this.buildOutlinkSlug(info.title, info.docId);
+                const childTargetDir = path.join(cfg.repoPath, childSlug);
+                const childExport = await this.exportDocumentToTarget({
+                    docId: info.docId,
+                    title: info.title || info.docId,
+                    slug: childSlug,
+                    cfg,
+                    targetDir: childTargetDir,
+                    buildToken,
+                    merge: false,
+                    linkMap: { byDocId: new Map(), byBlockId: new Map() },
+                    enableLinkIconAssets: true,
+                });
+                sharedAssetsChanged = childExport.sharedAssetsChanged || sharedAssetsChanged;
+                generatedOutlinkSlugs.push(childSlug);
+                linkMap.byDocId.set(info.docId, {
+                    slug: childSlug,
+                    href: `../${encodeURIComponent(childSlug)}/`,
+                    title: info.title || childExport.exportedName || info.docId,
+                });
             }
 
-        this.setProgress(68, "校验导出产物...");
-        const resolved = this.resolveSiYuanExportOutput({
-            repoPath: cfg.repoPath,
-            targetDir,
-            slug,
-            title: baseTitle,
-            exportedName: (resourceResult.data?.name || exportedName || "").trim(),
-            exportStartedAt,
-        });
-
-        if (!resolved.ok) {
-            this.finishProgress("导出失败：未找到 index.html", true);
-            showMessage("导出失败: 未找到index.html(SiYuan原生导出产物)v3.6.5", 6000, "error");
-            return null;
-        }
-
-        this.setProgress(74, "归并公共资源...");
-        const sharedAssetsChanged = this.consolidateSharedAssets(cfg.repoPath, targetDir);
-
-        this.setProgress(76, "校验发布资源...");
-        const validation = this.validatePublishedHtml(targetDir);
-        if (!validation.ok) {
-            const parts = [];
-            if (validation.invalidPaths.length) parts.push(`本地绝对路径: ${validation.invalidPaths.slice(0, 6).join(", ")}`);
-            if (validation.missingAssets.length) parts.push(`缺失资源: ${validation.missingAssets.slice(0, 6).join(", ")}`);
-            const message = `发布失败：资源校验未通过。${parts.join("；")}`;
-            this.finishProgress(message, true);
-            showMessage(message, 8000, "error");
-            return null;
+            if (linkMap.byDocId.size > 0) {
+                this.setProgress(64, "改写主文档出链...");
+                exportResult = await this.exportDocumentToTarget({
+                    docId,
+                    title: baseTitle,
+                    slug,
+                    cfg,
+                    targetDir,
+                    buildToken,
+                    merge: exportMerge,
+                    linkMap,
+                    enableLinkIconAssets: true,
+                });
+                exportedName = exportResult.exportedName;
+                sharedAssetsChanged = exportResult.sharedAssetsChanged || sharedAssetsChanged;
+            }
         }
 
         showMessage(`已导出: ${slug}/index.html`, 2500, "info");
@@ -2319,10 +2373,9 @@ class PagesPublisher extends Plugin {
         if (shouldAutoPush) {
             this.setProgress(78, "本地发布完成，正在尝试后台推送...");
             showMessage(`本地发布完成: ${slug}/index.html`, 3000, "info");
-            // Fire-and-forget non-blocking push
             const that = this;
             setTimeout(() => {
-                that._tryAutoPush(record, cfg.repoPath, exportedName || baseTitle, slug, sharedAssetsChanged, repoReady)
+                that._tryAutoPush(record, cfg.repoPath, exportedName || baseTitle, slug, sharedAssetsChanged, repoReady, generatedOutlinkSlugs)
                     .catch(() => {});
             }, 100);
         } else if (cfg.autoCommit && skipAutoPush) {
@@ -2339,15 +2392,18 @@ class PagesPublisher extends Plugin {
             slug,
             targetDir,
             url,
+            generatedOutlinkSlugs,
+            outlinkParentDocId,
         };
     }
 
-    async _tryAutoPush(record, repoPath, title, slug, sharedAssetsChanged, repoReady) {
+    async _tryAutoPush(record, repoPath, title, slug, sharedAssetsChanged, repoReady, extraScopeDirs = []) {
         try {
             await this.gitPush(repoPath, title, slug, undefined, {
                 includeSharedAssets: sharedAssetsChanged,
                 allowPushExistingAhead: false,
                 repoReady,
+                extraScopeDirs,
             });
             const successRecord = await this.upsertShareRecord({
                 ...record,
@@ -2459,6 +2515,118 @@ class PagesPublisher extends Plugin {
         return baseUrl ? `${baseUrl}/${encodeURIComponent(slug)}/` : `${slug}/`;
     }
 
+    buildOutlinkSlug(title, docId) {
+        const base = this.fname(title || docId || "outlink");
+        const suffix = this.hashString(docId || title || base).slice(0, 8);
+        return `outlink-${base}-${suffix}`;
+    }
+
+    extractSiyuanBlockIdFromElement(el) {
+        if (!el) return "";
+        const direct = el.getAttribute?.("data-id") || el.dataset?.id || "";
+        if (/^\d{14}-[a-z0-9]+$/i.test(String(direct).trim())) return String(direct).trim();
+
+        const href = el.getAttribute?.("href") || el.getAttribute?.("data-href") || "";
+        const matched = String(href || "").match(/siyuan:\/\/blocks\/(\d{14}-[a-z0-9]+)/i);
+        return matched ? matched[1] : "";
+    }
+
+    getPublishedNoteLinkSelector() {
+        return [
+            "a[href]",
+            "a[data-href]",
+            "span[data-type~='block-ref'][data-id]",
+            "span[data-type~='a'][data-href]",
+            "span[data-type~='url'][data-href]",
+        ].join(",");
+    }
+
+    async collectOutlinkDocInfos(content, currentDocId) {
+        const DOMParserCtor = globalThis.window?.DOMParser || globalThis.DOMParser;
+        if (!DOMParserCtor) return [];
+
+        const parser = new DOMParserCtor();
+        const doc = parser.parseFromString(`<div id="pages-pub-root">${content}</div>`, "text/html");
+        const root = doc.getElementById("pages-pub-root");
+        if (!root) return [];
+
+        const result = [];
+        const seenDocIds = new Set();
+        const seenPairs = new Set();
+        for (const el of Array.from(root.querySelectorAll(this.getPublishedNoteLinkSelector()))) {
+            const blockId = this.extractSiyuanBlockIdFromElement(el);
+            if (!blockId) continue;
+
+            const meta = await this.readDocMetaById(blockId);
+            const rootDocId = String(meta?.docId || blockId || "").trim();
+            if (!rootDocId || rootDocId === currentDocId) continue;
+            const pairKey = `${blockId}::${rootDocId}`;
+            if (seenPairs.has(pairKey)) continue;
+            seenPairs.add(pairKey);
+
+            const info = {
+                blockId,
+                docId: rootDocId,
+                title: meta?.title || rootDocId,
+                isPrimary: !seenDocIds.has(rootDocId),
+            };
+            seenDocIds.add(rootDocId);
+            result.push(info);
+        }
+
+        return result;
+    }
+
+    rewriteElementAsNewTabNoteLink(el, href) {
+        if (!el) return;
+
+        const tag = el.tagName ? el.tagName.toLowerCase() : "";
+        if (tag === "a") {
+            if (href) el.setAttribute("href", href);
+            el.setAttribute("target", "_blank");
+            el.setAttribute("rel", "noopener noreferrer");
+            el.classList.add("pages-pub-note-link");
+            return;
+        }
+
+        if (!href) return;
+
+        const a = el.ownerDocument.createElement("a");
+        a.className = "pages-pub-note-link";
+        a.innerHTML = el.innerHTML || el.textContent || "打开笔记";
+        a.setAttribute("href", href);
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+
+        for (const attr of Array.from(el.attributes || [])) {
+            if (attr.name.startsWith("data-")) a.setAttribute(attr.name, attr.value);
+        }
+
+        el.replaceWith(a);
+    }
+
+    rewritePublishedNoteLinks(root, { linkMap, openNoteLinksInNewTab }) {
+        if (!root) return;
+        const byDocId = linkMap?.byDocId instanceof Map ? linkMap.byDocId : new Map();
+        const byBlockId = linkMap?.byBlockId instanceof Map ? linkMap.byBlockId : new Map();
+
+        for (const el of Array.from(root.querySelectorAll(this.getPublishedNoteLinkSelector()))) {
+            const blockId = this.extractSiyuanBlockIdFromElement(el);
+            if (!blockId) continue;
+
+            const rootDocId = byBlockId.get(blockId) || blockId;
+            const mapped = byDocId.get(rootDocId);
+            if (mapped?.href) {
+                this.rewriteElementAsNewTabNoteLink(el, mapped.href);
+                continue;
+            }
+
+            if (openNoteLinksInNewTab === true && String(el.tagName || "").toLowerCase() === "a") {
+                this.rewriteElementAsNewTabNoteLink(el);
+            }
+        }
+    }
+
     formatDateTime(value) {
         const d = value ? new Date(value) : null;
         if (!d || Number.isNaN(d.getTime())) return "-";
@@ -2491,6 +2659,97 @@ class PagesPublisher extends Plugin {
             console.error("[siyuan-plugin-gitee-pages] openLocalPath failed:", err);
             showMessage(`打开目录失败: ${this.formatError(err)}`, 5000, "error");
         }
+    }
+
+    async exportDocumentToTarget({
+        docId,
+        title,
+        slug,
+        cfg,
+        targetDir,
+        buildToken,
+        merge,
+        linkMap,
+        enableLinkIconAssets,
+    }) {
+        const exportStartedAt = Date.now();
+        const result = await fetchSyncPost("/api/export/exportHTML", {
+            id: docId,
+            pdf: false,
+            removeAssets: false,
+            merge: merge !== false,
+            savePath: "",
+        });
+        if (!result || result.code !== 0 || !result.data) {
+            throw new Error(`导出失败: ${result?.msg || "未知"}`);
+        }
+
+        const exportedName = (result.data.name || "").trim();
+        this.ensureEmptyDir(targetDir);
+
+        let resourceResult = result;
+        if (!this.copyNativeExportFolder(result.data.folder, targetDir)) {
+            resourceResult = await fetchSyncPost("/api/export/exportHTML", {
+                id: docId,
+                pdf: false,
+                removeAssets: false,
+                merge: merge !== false,
+                savePath: targetDir,
+            });
+            if (!resourceResult || resourceResult.code !== 0 || !resourceResult.data) {
+                throw new Error(`资源导出失败: ${resourceResult?.msg || "未知"}`);
+            }
+        }
+
+        const linkIconResult = enableLinkIconAssets === false
+            ? { available: false, changed: false }
+            : this.consolidateLinkIconAssets(cfg.repoPath);
+
+        if (typeof result.data.content === "string" && result.data.content.trim()) {
+            fs.writeFileSync(
+                path.join(targetDir, "index.html"),
+                await this.buildSiYuanNativeHTML(result.data.content, exportedName || title, {
+                    sharedBase: `../${SHARED_ASSETS_DIR}`,
+                    buildToken,
+                    targetDir,
+                    linkMap,
+                    openNoteLinksInNewTab: true,
+                    enableLinkIconAssets: linkIconResult.available,
+                }),
+                "utf-8",
+            );
+        }
+
+        const resolved = this.resolveSiYuanExportOutput({
+            repoPath: cfg.repoPath,
+            targetDir,
+            slug,
+            title,
+            exportedName: (resourceResult.data?.name || exportedName || "").trim(),
+            exportStartedAt,
+        });
+        if (!resolved.ok) {
+            throw new Error("导出失败: 未找到 index.html");
+        }
+
+        const sharedAssetsChanged = this.consolidateSharedAssets(cfg.repoPath, targetDir, {
+            includeLinkIconChanged: linkIconResult.changed,
+        });
+        const validation = this.validatePublishedHtml(targetDir);
+        if (!validation.ok) {
+            const parts = [];
+            if (validation.invalidPaths.length) parts.push(`本地绝对路径: ${validation.invalidPaths.slice(0, 6).join(", ")}`);
+            if (validation.missingAssets.length) parts.push(`缺失资源: ${validation.missingAssets.slice(0, 6).join(", ")}`);
+            throw new Error(`发布失败：资源校验未通过。${parts.join("；")}`);
+        }
+
+        return {
+            content: String(result.data.content || ""),
+            exportedName,
+            resourceResult,
+            sharedAssetsChanged,
+            linkIconResult,
+        };
     }
 
     resolveSiYuanExportOutput({ repoPath, targetDir, slug, title, exportedName, exportStartedAt }) {
@@ -2613,10 +2872,62 @@ class PagesPublisher extends Plugin {
         return path.join(repoPath, SHARED_ASSETS_DIR);
     }
 
-    consolidateSharedAssets(repoPath, targetDir) {
+    getLinkIconPluginDir() {
+        const workspaceDir = this.getWorkspaceDir();
+        if (!workspaceDir) return "";
+        const candidates = [
+            path.join(workspaceDir, "data", "plugins", "link-icon"),
+            path.join(workspaceDir, "data", "plugins", "siyuan-plugin-link-icon"),
+        ];
+        return candidates.find((dir) => fs.existsSync(dir) && fs.statSync(dir).isDirectory()) || "";
+    }
+
+    consolidateLinkIconAssets(repoPath) {
+        const pluginDir = this.getLinkIconPluginDir();
+        if (!pluginDir) return { available: false, changed: false };
+
+        const sharedRoot = this.getSharedAssetsRoot(repoPath);
+        const targetRoot = path.join(sharedRoot, "link-icon");
+        fs.mkdirSync(targetRoot, { recursive: true });
+
+        let changed = false;
+        const iconCandidates = [
+            path.join(pluginDir, "icon"),
+            path.join(pluginDir, "public", "icon"),
+        ];
+        const iconDir = iconCandidates.find((dir) => fs.existsSync(dir) && fs.statSync(dir).isDirectory());
+
+        const cssCandidates = [
+            path.join(pluginDir, "style.css"),
+            path.join(pluginDir, "src", "style.css"),
+        ];
+        const cssFile = cssCandidates.find((file) => fs.existsSync(file) && fs.statSync(file).isFile());
+
+        if (!iconDir || !cssFile) return { available: false, changed };
+
+        changed = this.copyRecursiveSmart(iconDir, path.join(targetRoot, "icon")) || changed;
+
+        let css = fs.readFileSync(cssFile, "utf-8");
+        css = css
+            .replace(/plugins\/link-icon\/icon\//g, "./icon/")
+            .replace(/\/plugins\/link-icon\/icon\//g, "./icon/")
+            .replace(/plugins\/siyuan-plugin-link-icon\/icon\//g, "./icon/")
+            .replace(/\/plugins\/siyuan-plugin-link-icon\/icon\//g, "./icon/");
+
+        const targetCss = path.join(targetRoot, "style.css");
+        const oldCss = fs.existsSync(targetCss) ? fs.readFileSync(targetCss, "utf-8") : "";
+        if (oldCss !== css) {
+            fs.writeFileSync(targetCss, css, "utf-8");
+            changed = true;
+        }
+
+        return { available: true, changed };
+    }
+
+    consolidateSharedAssets(repoPath, targetDir, options = {}) {
         const sharedRoot = this.getSharedAssetsRoot(repoPath);
         fs.mkdirSync(sharedRoot, { recursive: true });
-        let changed = false;
+        let changed = options.includeLinkIconChanged === true;
         for (const name of ["appearance", "stage"]) {
             const src = path.join(targetDir, name);
             if (!fs.existsSync(src)) continue;
@@ -2867,7 +3178,7 @@ class PagesPublisher extends Plugin {
         )).join("");
     }
 
-    preparePublishedContent(content, { targetDir, sharedBase }) {
+    async preparePublishedContent(content, { targetDir, sharedBase, linkMap = { byDocId: new Map(), byBlockId: new Map() }, openNoteLinksInNewTab = true }) {
         const DOMParserCtor = globalThis.window?.DOMParser || globalThis.DOMParser;
         if (!DOMParserCtor) {
             return {
@@ -2894,6 +3205,10 @@ class PagesPublisher extends Plugin {
             if (rewritten.ok && rewritten.value && rewritten.value !== raw) {
                 el.setAttribute(attr, rewritten.value);
             }
+        });
+        this.rewritePublishedNoteLinks(root, {
+            linkMap,
+            openNoteLinksInNewTab,
         });
         const tocItems = this.buildStaticTocData(root);
         return {
@@ -2941,9 +3256,11 @@ class PagesPublisher extends Plugin {
     async buildSiYuanNativeHTML(content, title, options = {}) {
         const sharedBase = options.sharedBase || ".";
         const buildToken = String(options.buildToken || Date.now());
-        const prepared = this.preparePublishedContent(content, {
+        const prepared = await this.preparePublishedContent(content, {
             targetDir: options.targetDir,
             sharedBase,
+            linkMap: options.linkMap,
+            openNoteLinksInNewTab: options.openNoteLinksInNewTab !== false,
         });
         const siyuan = globalThis.window?.siyuan || {};
         const appearance = siyuan.config?.appearance || {};
@@ -2970,6 +3287,9 @@ class PagesPublisher extends Plugin {
         const protyleBase = `${this.esc(sharedBase)}/stage/protyle`;
         const tocStateClass = prepared.hasToc ? "" : " pages-pub-toc--empty";
         const bodyStateClass = prepared.hasToc ? "" : " pages-pub-no-toc";
+        const linkIconStyle = options.enableLinkIconAssets === true
+            ? `<link rel="stylesheet" type="text/css" id="pagesPubLinkIconStyle" href="${this.esc(sharedBase)}/link-icon/style.css?v=${this.esc(buildToken)}"/>`
+            : "";
 
         return `<!DOCTYPE html>
 <html lang="${this.esc(lang)}" data-theme-mode="${themeMode}" data-light-theme="${this.esc(lightTheme)}" data-dark-theme="${this.esc(darkTheme)}">
@@ -2982,6 +3302,7 @@ class PagesPublisher extends Plugin {
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="stylesheet" type="text/css" id="baseStyle" href="${this.esc(sharedBase)}/stage/build/export/base.css?v=${this.esc(buildToken)}"/>
     <link rel="stylesheet" type="text/css" id="themeDefaultStyle" href="${this.esc(sharedBase)}/appearance/themes/${this.esc(themeName)}/theme.css?v=${this.esc(buildToken)}"/>
+    ${linkIconStyle}
     <script src="${this.esc(sharedBase)}/stage/protyle/js/protyle-html.js?v=${this.esc(buildToken)}"></script>
     ${themeStyle}
     <title>${safeTitle}</title>
@@ -4249,33 +4570,41 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
     }
 
     async stagePublishedPaths(repoPath, scopeDir, options) {
-        if (!scopeDir) {
-            await this.runCommand("git add -A", options);
-            return;
+        const scopes = [];
+        if (scopeDir) scopes.push(scopeDir);
+        if (Array.isArray(options?.extraScopeDirs)) {
+            for (const item of options.extraScopeDirs) {
+                if (item && !scopes.includes(item)) scopes.push(item);
+            }
         }
-        const absScopeDir = path.join(repoPath, scopeDir);
-        if (fs.existsSync(absScopeDir)) {
-            await this.runCommand(`git add -A -- ${this.quoteGitPath(scopeDir)}`, options);
+        if (!scopes.length) {
+            await this.runCommand("git add -A", options);
         } else {
-            let tracked = false;
-            try {
-                const { stdout } = await this.runCommand(
-                    `git ls-files -- ${this.quoteGitPath(scopeDir)}`,
-                    options
-                );
-                if (stdout && stdout.trim()) {
-                    tracked = true;
+            for (const dir of scopes) {
+                const absScopeDir = path.join(repoPath, dir);
+                if (fs.existsSync(absScopeDir)) {
+                    await this.runCommand(`git add -A -- ${this.quoteGitPath(dir)}`, options);
+                } else {
+                    let tracked = false;
+                    try {
+                        const { stdout } = await this.runCommand(
+                            `git ls-files -- ${this.quoteGitPath(dir)}`,
+                            options
+                        );
+                        if (stdout && stdout.trim()) {
+                            tracked = true;
+                        }
+                    } catch (e) {
+                        // ls-files failed, assume not tracked
+                    }
+                    if (tracked) {
+                        await this.runCommand(
+                            `git rm -r --ignore-unmatch -- ${this.quoteGitPath(dir)}`,
+                            options
+                        );
+                    }
                 }
-            } catch (e) {
-                // ls-files failed, assume not tracked
             }
-            if (tracked) {
-                await this.runCommand(
-                    `git rm -r --ignore-unmatch -- ${this.quoteGitPath(scopeDir)}`,
-                    options
-                );
-            }
-            // If not tracked and not on disk, skip silently
         }
         const sharedRoot = this.getSharedAssetsRoot(repoPath);
         if (options?.includeSharedAssets && fs.existsSync(sharedRoot)) {
@@ -4353,7 +4682,12 @@ body::before{content:"";position:fixed;top:0;left:0;right:0;height:3px;backgroun
         let committed = false;
         try {
             const repoReady = pushOptions.repoReady || await this.ensurePublishRepoReady(repoPath, { silent: true });
-            const o = { cwd: repoPath, includeSharedAssets: !!pushOptions.includeSharedAssets, repoReady };
+            const o = {
+                cwd: repoPath,
+                includeSharedAssets: !!pushOptions.includeSharedAssets,
+                extraScopeDirs: Array.isArray(pushOptions.extraScopeDirs) ? pushOptions.extraScopeDirs : [],
+                repoReady,
+            };
             const precheck = await this.runPublishPrecheck(repoPath);
             if (!precheck.ok) {
                 const error = new Error(precheck.issues.join("\n"));

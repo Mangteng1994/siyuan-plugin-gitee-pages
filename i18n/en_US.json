@@ -20,5 +20,6 @@
   "historyEditTagsHint": "Separate tags with commas, semicolons, spaces, or newlines",
   "historyEditTagsPlaceholder": "Enter tags...",
   "historyEditTagsSave": "Save",
-  "historyEditTagsCancel": "Cancel"
+  "historyEditTagsCancel": "Cancel",
+  "separateOutlinkPages": "Separate outlink pages"
 }

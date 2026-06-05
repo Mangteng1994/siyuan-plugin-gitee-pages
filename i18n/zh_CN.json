@@ -20,5 +20,6 @@
   "historyEditTagsHint": "支持逗号、顿号、分号、空格或换行分隔",
   "historyEditTagsPlaceholder": "输入标签...",
   "historyEditTagsSave": "保存",
-  "historyEditTagsCancel": "取消"
+  "historyEditTagsCancel": "取消",
+  "separateOutlinkPages": "出链页面单独跳转"
 }
